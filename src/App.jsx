@@ -367,9 +367,9 @@ async function analyzeMood() {
   if (days.length >= 2) {
     const diffs = [];
     for (let i = 1; i < days.length; i++) diffs.push(Math.abs(days[i].vibe - days[i-1].vibe));
-    volatility = Math.round((diffs.reduce((s,d) => s+d, 0) / diffs.length) * 200); // scale to 0-100ish
+    volatility = diffs.length > 0 ? Math.round((diffs.reduce((s,d) => s+d, 0) / diffs.length) * 200) : 0;
   }
-  volatility = Math.min(volatility, 100);
+  volatility = Math.min(volatility, 100) || 0;
 
   // Emotional scores — the 4 dimensions we show
   const emotionalScores = [
