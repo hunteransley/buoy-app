@@ -257,9 +257,10 @@ async function analyzeMood() {
   // 2. OVERALL VIBE — your emotional center of gravity right now
   // ═══════════════════════════════════════════════════════════════════════
   const vibeSource = shortTracks.length > 0 ? shortTracks : recentItems.map(i => i.track);
-  const avgPop = vibeSource.reduce((s, t) => s + t.popularity, 0) / vibeSource.length;
+  const pops = vibeSource.map(t => t.popularity || 0).filter(p => p > 0);
+  const avgPop = pops.length > 0 ? pops.reduce((s, p) => s + p, 0) / pops.length : 50;
   const overallVibe = avgPop / 100;
-  const explicitPct = Math.round((vibeSource.filter(t => t.explicit).length / vibeSource.length) * 100);
+  const explicitPct = vibeSource.length > 0 ? Math.round((vibeSource.filter(t => t.explicit).length / vibeSource.length) * 100) : 0;
 
   let overallMood, overallEmoji, overallColor, overallDesc;
   if (overallVibe >= 0.72) {
@@ -346,43 +347,72 @@ async function analyzeMood() {
   const topTrackAllTime = longTracks[0];
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 7. LISTENING SCORES — quantified identity
+  // 7. EMOTIONAL DIMENSIONS — how you use music to feel
   // ═══════════════════════════════════════════════════════════════════════
 
-  // Obscurity: how deep do you dig? (inverse of avg popularity)
+  // Obscurity → reframed as "Depth" — how far beneath the surface you go
   const obscurity = Math.round(100 - avgPop);
 
-  // Loyalty: what % of your current artists have been with you long term
+  // Loyalty → reframed as "Emotional Anchoring" — do you return to what's safe
   const loyaltyPct = shortArtists.length > 0
     ? Math.round((shortArtists.filter(a => longMap[a.name]).length / shortArtists.length) * 100)
     : 0;
 
-  // Diversity: how many unique artists in your recent top 50
+  // Diversity → reframed as "Emotional Range" — how wide your mood palette is
   const uniqueShortArtists = new Set(shortTracks.map(t => t.artists[0]?.name)).size;
   const diversityPct = Math.round((uniqueShortArtists / Math.max(shortTracks.length, 1)) * 100);
 
+  // Volatility — how much your daily vibe swings (from the day data)
+  let volatility = 0;
+  if (days.length >= 2) {
+    const diffs = [];
+    for (let i = 1; i < days.length; i++) diffs.push(Math.abs(days[i].vibe - days[i-1].vibe));
+    volatility = Math.round((diffs.reduce((s,d) => s+d, 0) / diffs.length) * 200); // scale to 0-100ish
+  }
+  volatility = Math.min(volatility, 100);
+
+  // Emotional scores — the 4 dimensions we show
+  const emotionalScores = [
+    { key: "range", label: "Emotional Range", value: diversityPct, color: C.blue,
+      desc: diversityPct >= 65 ? "You feel widely. Your music spans the full emotional spectrum."
+        : diversityPct >= 40 ? "You have depth in familiar zones, with room to explore."
+        : "You go deep, not wide. When something resonates, you stay." },
+    { key: "anchoring", label: "Comfort Seeking", value: loyaltyPct, color: C.mint,
+      desc: loyaltyPct >= 55 ? "You return to what's safe. Music is your anchor."
+        : loyaltyPct >= 30 ? "You balance the familiar and the new."
+        : "You're always reaching for something you haven't heard." },
+    { key: "depth", label: "Depth", value: obscurity, color: C.purple,
+      desc: obscurity >= 55 ? "You dig beneath the surface. The obvious isn't enough."
+        : obscurity >= 35 ? "You move between the known and the hidden."
+        : "You gravitate toward shared experience — music everyone knows." },
+    { key: "volatility", label: "Mood Swing", value: volatility, color: C.gold,
+      desc: volatility >= 50 ? "Your mood through music shifts dramatically day to day."
+        : volatility >= 20 ? "You have natural ebbs and flows."
+        : "Steady. Your emotional baseline through music barely moves." },
+  ];
+
   // ═══════════════════════════════════════════════════════════════════════
-  // 8. LISTENING PERSONALITY — the archetype
+  // 8. EMOTIONAL ARCHETYPE — how you use music to process feelings
   // ═══════════════════════════════════════════════════════════════════════
   let personality, personalityEmoji, personalityDesc;
   if (obscurity >= 55 && loyaltyPct <= 35) {
-    personality = "The Explorer"; personalityEmoji = "🧭";
-    personalityDesc = "You chase the unknown. Your taste is restless, always evolving — you'd rather discover than replay.";
+    personality = "The Seeker"; personalityEmoji = "🧭";
+    personalityDesc = "You use music to explore feelings you can't name yet. When something shifts inside you, you go looking for the sound that matches.";
   } else if (obscurity >= 55 && loyaltyPct > 35) {
-    personality = "The Curator"; personalityEmoji = "🎨";
-    personalityDesc = "Deep cuts and loyalty. You know what you love and you find the hidden gems within it.";
+    personality = "The Alchemist"; personalityEmoji = "✨";
+    personalityDesc = "You transform how you feel through music. You have trusted artists who know how to take you from one emotional state to another.";
   } else if (obscurity < 35 && loyaltyPct <= 35) {
-    personality = "The Drifter"; personalityEmoji = "🌊";
-    personalityDesc = "You follow the current. New sounds find you, and you let them carry you wherever they go.";
+    personality = "The Mirror"; personalityEmoji = "🪞";
+    personalityDesc = "You reach for music that reflects exactly how you already feel. You don't want to be fixed — you want to be understood.";
   } else if (obscurity < 35 && loyaltyPct > 55) {
-    personality = "The Devotee"; personalityEmoji = "🔥";
-    personalityDesc = "You love who you love. Your favorites are your favorites — and that's a kind of integrity.";
+    personality = "The Anchor"; personalityEmoji = "⚓";
+    personalityDesc = "Music is your constant. The same voices, the same sounds — they hold you steady no matter what life does.";
   } else if (diversityPct >= 65) {
-    personality = "The Omnivore"; personalityEmoji = "🌈";
-    personalityDesc = "You resist categories. Your taste is wide, unpredictable, and honestly kind of impressive.";
+    personality = "The Empath"; personalityEmoji = "🌊";
+    personalityDesc = "You feel everything, and your music proves it. Your range is rare — you can sit in sadness and dance in joy in the same hour.";
   } else {
     personality = "The Shapeshifter"; personalityEmoji = "🦋";
-    personalityDesc = "You don't fit a mold. Your listening shifts with your life — and that's the most honest thing music can do.";
+    personalityDesc = "Your emotional relationship with music is fluid. It shifts with your life, and that's the most honest thing it can do.";
   }
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -406,7 +436,7 @@ async function analyzeMood() {
     topGenres, emergingGenres, fadingGenres,
     comfortArtists, rising, fading,
     topTrackNow, topTrackAllTime,
-    obscurity, loyaltyPct, diversityPct, explicitPct,
+    emotionalScores, obscurity, loyaltyPct, diversityPct, explicitPct, volatility,
     personality, personalityEmoji, personalityDesc,
     trackCount: Math.max(vibeSource.length, recentItems.length),
   };
@@ -520,17 +550,17 @@ function MoodReport({ onContinue }) {
             <p style={{fontSize:12,opacity:0.55,fontFamily:bf,margin:0,lineHeight:1.45}}>{d.personalityDesc}</p>
           </div>
 
-          {/* Stats row */}
-          <div style={{display:"flex",gap:6,marginBottom:18}}>
-            {[
-              {v:d.obscurity,l:"Obscure",c:d.overallColor},
-              {v:d.loyaltyPct,l:"Loyal",c:C.mint},
-              {v:d.diversityPct,l:"Diverse",c:C.blue},
-              {v:d.explicitPct,l:"Explicit",c:C.pink},
-            ].map(s => (
-              <div key={s.l} style={{flex:1,background:"rgba(255,255,255,0.05)",borderRadius:10,padding:"10px 6px",textAlign:"center"}}>
-                <div style={{fontFamily:hf,fontWeight:800,fontSize:20,color:s.c}}>{s.v}<span style={{fontSize:12,opacity:0.6}}>%</span></div>
-                <div style={{fontSize:9,opacity:0.35,fontFamily:bf,marginTop:2}}>{s.l}</div>
+          {/* Emotional dimensions */}
+          <div style={{marginBottom:18}}>
+            {d.emotionalScores.map(s => (
+              <div key={s.key} style={{marginBottom:10}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                  <span style={{fontSize:10,opacity:0.5,fontFamily:bf,textTransform:"uppercase",letterSpacing:"1px"}}>{s.label}</span>
+                  <span style={{fontSize:13,fontFamily:hf,fontWeight:700,color:s.color}}>{s.value}%</span>
+                </div>
+                <div style={{height:4,background:"rgba(255,255,255,0.08)",borderRadius:99,overflow:"hidden"}}>
+                  <div style={{height:"100%",width:`${Math.max(s.value, 3)}%`,background:s.color,borderRadius:99,transition:"width 0.8s ease"}} />
+                </div>
               </div>
             ))}
           </div>
@@ -538,7 +568,7 @@ function MoodReport({ onContinue }) {
           {/* Week bars */}
           {d.days.length > 1 && (
             <div style={{marginBottom:18}}>
-              <p style={{fontSize:9,textTransform:"uppercase",letterSpacing:"2px",opacity:0.3,fontFamily:bf,margin:"0 0 10px"}}>This Week</p>
+              <p style={{fontSize:9,textTransform:"uppercase",letterSpacing:"2px",opacity:0.3,fontFamily:bf,margin:"0 0 10px"}}>Your Mood This Week</p>
               <div style={{display:"flex",gap:4,alignItems:"flex-end",height:56}}>
                 {d.days.map((day,i) => {
                   const h = 14 + day.vibe * 42;
@@ -595,19 +625,17 @@ function MoodReport({ onContinue }) {
             <TrackRow t={d.topTrackAllTime} label="Your #1 of All Time" />
           )}
           <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18}}>
-            <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 12px"}}>The Numbers</p>
-            {[
-              {l:"Obscurity",v:`${d.obscurity}%`,d:d.obscurity>=55?"deep cuts lover":d.obscurity>=35?"balanced mix":"mainstream leaning"},
-              {l:"Loyalty",v:`${d.loyaltyPct}%`,d:d.loyaltyPct>=55?"ride or die":d.loyaltyPct>=30?"open minded":"always exploring"},
-              {l:"Diversity",v:`${d.diversityPct}%`,d:d.diversityPct>=65?"wide ranging":d.diversityPct>=40?"focused but flexible":"deep in a lane"},
-              {l:"Explicit",v:`${d.explicitPct}%`,d:d.explicitPct>=55?"unfiltered":d.explicitPct>=25?"mixed":"keeping it clean"},
-            ].map(r => (
-              <div key={r.l} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.bg}`}}>
-                <span style={{fontFamily:bf,fontSize:13,color:C.text2}}>{r.l}</span>
-                <div style={{textAlign:"right"}}>
-                  <span style={{fontFamily:hf,fontWeight:700,fontSize:14,color:C.navy}}>{r.v}</span>
-                  <span style={{fontFamily:bf,fontSize:11,color:C.text2,marginLeft:6}}>{r.d}</span>
+            <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 14px"}}>Your Emotional Dimensions</p>
+            {d.emotionalScores.map(s => (
+              <div key={s.key} style={{padding:"10px 0",borderBottom:`1px solid ${C.bg}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <span style={{fontFamily:hf,fontWeight:700,fontSize:14,color:C.navy}}>{s.label}</span>
+                  <span style={{fontFamily:hf,fontWeight:800,fontSize:16,color:s.color}}>{s.value}%</span>
                 </div>
+                <div style={{height:5,background:C.bg,borderRadius:99,overflow:"hidden",marginBottom:6}}>
+                  <div style={{height:"100%",width:`${Math.max(s.value,3)}%`,background:s.color,borderRadius:99}} />
+                </div>
+                <p style={{fontFamily:bf,fontSize:12,color:C.text2,margin:0,lineHeight:1.4}}>{s.desc}</p>
               </div>
             ))}
           </div>
@@ -619,22 +647,22 @@ function MoodReport({ onContinue }) {
         <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeIn 0.3s ease"}}>
           {d.comfortArtists.length > 0 && (
             <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18}}>
-              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Always There 💛</p>
-              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 8px",lineHeight:1.4}}>Your constants — top artists across every time range.</p>
+              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Your Emotional Anchors 💛</p>
+              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 8px",lineHeight:1.4}}>The artists you return to no matter what you're feeling. They hold you steady.</p>
               {d.comfortArtists.map(a => <ArtistRow key={a.name} a={a} />)}
             </div>
           )}
           {d.rising.length > 0 && (
             <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18}}>
-              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Rising Fast 🔥</p>
-              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 8px",lineHeight:1.4}}>New to your top rotation. Something's pulling you here.</p>
+              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>New Emotional Territory 🔥</p>
+              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 8px",lineHeight:1.4}}>Something new is resonating. These artists are meeting a feeling you didn't have words for yet.</p>
               {d.rising.map(a => <ArtistRow key={a.name} a={a} />)}
             </div>
           )}
           {d.fading.length > 0 && (
             <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18}}>
-              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Drifting Away 🌙</p>
-              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 8px",lineHeight:1.4}}>Used to be heavy in your rotation. Not so much anymore.</p>
+              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Growing Past 🌙</p>
+              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 8px",lineHeight:1.4}}>You've moved on from these. The feelings they held for you have changed shape.</p>
               {d.fading.map(a => <ArtistRow key={a.name} a={a} />)}
             </div>
           )}
@@ -646,8 +674,8 @@ function MoodReport({ onContinue }) {
         <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeIn 0.3s ease"}}>
           {d.emergingGenres.length > 0 && (
             <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18}}>
-              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Genres You're Moving Toward 📈</p>
-              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 10px"}}>New in your short-term top genres. Your taste is shifting.</p>
+              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Where Your Feelings Are Going 📈</p>
+              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 10px"}}>New genres in your life. The sounds your emotions are reaching for now.</p>
               <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
                 {d.emergingGenres.map(g => <span key={g} style={{fontSize:13,padding:"6px 14px",borderRadius:99,background:C.mint+"22",color:C.navy,fontFamily:bf,fontWeight:600}}>{g}</span>)}
               </div>
@@ -655,8 +683,8 @@ function MoodReport({ onContinue }) {
           )}
           {d.fadingGenres.length > 0 && (
             <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18}}>
-              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Genres You're Leaving Behind 📉</p>
-              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 10px"}}>Were dominant in your long-term listening. Fading now.</p>
+              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>What You've Outgrown 📉</p>
+              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 10px"}}>These sounds used to hold something for you. You've moved past whatever that was.</p>
               <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
                 {d.fadingGenres.map(g => <span key={g} style={{fontSize:13,padding:"6px 14px",borderRadius:99,background:C.pink+"22",color:C.navy,fontFamily:bf,fontWeight:600}}>{g}</span>)}
               </div>
@@ -664,7 +692,7 @@ function MoodReport({ onContinue }) {
           )}
           {d.emergingGenres.length === 0 && d.fadingGenres.length === 0 && (
             <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18,textAlign:"center"}}>
-              <p style={{fontSize:14,color:C.navy,fontFamily:bf,margin:0}}>Your taste has been remarkably consistent. You know what you like.</p>
+              <p style={{fontSize:14,color:C.navy,fontFamily:bf,margin:0,fontStyle:"italic"}}>Your emotional palette through music has been remarkably consistent. You know what you need.</p>
             </div>
           )}
         </div>
