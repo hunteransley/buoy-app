@@ -743,7 +743,12 @@ export default function BuoyApp() {
     const u=session.user;
     spotifyState.userId=u.id;
     const {data:profile}=await supabase.from("profiles").select("has_shared,display_name,spotify_id,spotify_access_token,spotify_refresh_token,spotify_token_expiry").eq("id",u.id).single();
-    if(profile){setHasShared(!!profile.has_shared);setSpotifyName(profile.display_name);}else{setHasShared(false);}
+    if(profile){
+      // Check actual shares if flag is false (handles existing users before this column existed)
+      let shared = !!profile.has_shared;
+      if(!shared){const {count}=await supabase.from("shares").select("*",{count:"exact",head:true}).eq("user_id",u.id);if(count>0){shared=true;await supabase.from("profiles").update({has_shared:true}).eq("id",u.id);}}
+      setHasShared(shared);setSpotifyName(profile.display_name);
+    }else{setHasShared(false);}
     if(session.provider_token){
       spotifyState.token=session.provider_token;spotifyState.refreshToken=session.provider_refresh_token;setSpotifyReady(true);
       const me=await spGet("https://api.spotify.com/v1/me");
