@@ -202,106 +202,238 @@ function AuthScreen() {
   );
 }
 
-// ─── Mood Report (the hook) ──────────────────────────────────────────────
+// ─── Mood Analysis Engine ────────────────────────────────────────────────
 async function analyzeMood() {
-  // Get recently played (up to 50)
-  const recent = await spGet("https://api.spotify.com/v1/me/player/recently-played?limit=50");
-  if (!recent?.items?.length) return null;
+  // Pull EVERYTHING Spotify gives us, in parallel for speed
+  const [recent, topShort, topMed, topLong, artShort, artMed, artLong] = await Promise.all([
+    spGet("https://api.spotify.com/v1/me/player/recently-played?limit=50"),
+    spGet("https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=short_term"),
+    spGet("https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=medium_term"),
+    spGet("https://api.spotify.com/v1/me/top/tracks?limit=50&time_range=long_term"),
+    spGet("https://api.spotify.com/v1/me/top/artists?limit=50&time_range=short_term"),
+    spGet("https://api.spotify.com/v1/me/top/artists?limit=50&time_range=medium_term"),
+    spGet("https://api.spotify.com/v1/me/top/artists?limit=50&time_range=long_term"),
+  ]);
 
-  const tracks = recent.items;
-  const trackIds = [...new Set(tracks.map(t => t.track.id))];
+  const recentItems = recent?.items || [];
+  const shortTracks = topShort?.items || [];
+  const medTracks = topMed?.items || [];
+  const longTracks = topLong?.items || [];
+  const shortArtists = artShort?.items || [];
+  const medArtists = artMed?.items || [];
+  const longArtists = artLong?.items || [];
 
-  // Get audio features for all tracks
-  const features = await spGet(`https://api.spotify.com/v1/audio-features?ids=${trackIds.join(",")}`);
-  if (!features?.audio_features) return null;
+  if (shortTracks.length === 0 && recentItems.length === 0) return null;
 
-  const featureMap = {};
-  features.audio_features.forEach(f => { if(f) featureMap[f.id] = f; });
-
-  // Group by day
+  // ═══════════════════════════════════════════════════════════════════════
+  // 1. LISTENING TIMELINE — what your week actually looked like
+  // ═══════════════════════════════════════════════════════════════════════
   const dayMap = {};
-  tracks.forEach(t => {
-    const day = t.played_at.slice(0, 10);
+  recentItems.forEach(item => {
+    const day = item.played_at.slice(0, 10);
     if (!dayMap[day]) dayMap[day] = [];
-    const f = featureMap[t.track.id];
-    if (f) dayMap[day].push({
-      track: t.track,
-      valence: f.valence,
-      energy: f.energy,
-      danceability: f.danceability,
-      tempo: f.tempo,
-      played_at: t.played_at,
-    });
+    dayMap[day].push({ track: item.track, played_at: item.played_at });
   });
 
-  // Calculate daily averages
   const days = Object.entries(dayMap).sort(([a],[b]) => a.localeCompare(b)).map(([date, items]) => {
-    const avg = (arr, key) => arr.reduce((s, i) => s + i[key], 0) / arr.length;
-    const v = avg(items, "valence");
-    const e = avg(items, "energy");
+    const avgPop = items.reduce((s, i) => s + i.track.popularity, 0) / items.length;
+    const vibe = avgPop / 100;
+    const explicitRatio = items.filter(i => i.track.explicit).length / items.length;
+    // Unique artists as diversity signal
+    const uniqueArtists = new Set(items.map(i => i.track.artists[0]?.name)).size;
+    const diversity = Math.min(uniqueArtists / items.length, 1);
+
     let mood, emoji, color;
-    if (v >= 0.6 && e >= 0.6) { mood = "Energized"; emoji = "⚡"; color = C.gold; }
-    else if (v >= 0.6 && e < 0.6) { mood = "Calm"; emoji = "🌊"; color = C.blue; }
-    else if (v >= 0.4 && v < 0.6) { mood = "Neutral"; emoji = "😐"; color = C.text2; }
-    else if (v < 0.4 && e >= 0.5) { mood = "Restless"; emoji = "🌀"; color = C.purple; }
-    else { mood = "Low"; emoji = "🌧"; color = C.pink; }
-    return { date, mood, emoji, color, valence: v, energy: e, trackCount: items.length, topTrack: items[0]?.track };
+    if (vibe >= 0.72) { mood = "On Top"; emoji = "⚡"; color = C.gold; }
+    else if (vibe >= 0.58) { mood = "Cruising"; emoji = "☀️"; color = C.mint; }
+    else if (vibe >= 0.44) { mood = "Drifting"; emoji = "🌊"; color = C.blue; }
+    else if (vibe >= 0.30) { mood = "Digging Deep"; emoji = "🌙"; color = C.purple; }
+    else { mood = "In the Dark"; emoji = "🌧"; color = C.pink; }
+    return { date, mood, emoji, color, vibe, explicitRatio, diversity, trackCount: items.length,
+      topArt: items[0]?.track.album?.images?.[1]?.url };
   });
 
-  // Overall stats
-  const allValence = tracks.map(t => featureMap[t.track.id]?.valence).filter(Boolean);
-  const allEnergy = tracks.map(t => featureMap[t.track.id]?.energy).filter(Boolean);
-  const avgValence = allValence.reduce((s, v) => s + v, 0) / allValence.length;
-  const avgEnergy = allEnergy.reduce((s, v) => s + v, 0) / allEnergy.length;
+  // ═══════════════════════════════════════════════════════════════════════
+  // 2. OVERALL VIBE — your emotional center of gravity right now
+  // ═══════════════════════════════════════════════════════════════════════
+  const vibeSource = shortTracks.length > 0 ? shortTracks : recentItems.map(i => i.track);
+  const avgPop = vibeSource.reduce((s, t) => s + t.popularity, 0) / vibeSource.length;
+  const overallVibe = avgPop / 100;
+  const explicitPct = Math.round((vibeSource.filter(t => t.explicit).length / vibeSource.length) * 100);
 
-  // Top album arts (unique, for the visual grid)
-  const seen = new Set();
+  let overallMood, overallEmoji, overallColor, overallDesc;
+  if (overallVibe >= 0.72) {
+    overallMood = "Radiating Energy"; overallEmoji = "⚡"; overallColor = C.gold;
+    overallDesc = "You're gravitating toward big, bright, undeniable music right now. Main character energy.";
+  } else if (overallVibe >= 0.58) {
+    overallMood = "Feeling Good"; overallEmoji = "☀️"; overallColor = C.mint;
+    overallDesc = "Steady warmth. You're choosing music that keeps the mood lifted without forcing it.";
+  } else if (overallVibe >= 0.44) {
+    overallMood = "In Between Worlds"; overallEmoji = "🌤"; overallColor = C.blue;
+    overallDesc = "Neither high nor low — you're in a contemplative space. Your music is searching for something.";
+  } else if (overallVibe >= 0.30) {
+    overallMood = "Going Inward"; overallEmoji = "🌙"; overallColor = C.purple;
+    overallDesc = "You're drawn to depth right now. The music you're choosing says you're processing something.";
+  } else {
+    overallMood = "In Your Feels"; overallEmoji = "🌧"; overallColor = C.pink;
+    overallDesc = "Raw and real. You're not reaching for easy comfort — you're sitting with it.";
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 3. ALBUM ART — the visual signature of your listening
+  // ═══════════════════════════════════════════════════════════════════════
+  const seenArt = new Set();
   const albumArts = [];
-  tracks.forEach(t => {
-    const art = t.track.album.images?.[1]?.url || t.track.album.images?.[0]?.url;
-    if (art && !seen.has(art)) { seen.add(art); albumArts.push(art); }
+  [...shortTracks, ...recentItems.map(i => i.track)].forEach(t => {
+    const art = t.album?.images?.[1]?.url || t.album?.images?.[0]?.url;
+    if (art && !seenArt.has(art)) { seenArt.add(art); albumArts.push(art); }
   });
 
-  // Overall mood label
-  let overallMood, overallEmoji, overallColor;
-  if (avgValence >= 0.6 && avgEnergy >= 0.6) { overallMood = "Energized"; overallEmoji = "⚡"; overallColor = C.gold; }
-  else if (avgValence >= 0.6) { overallMood = "Feeling Good"; overallEmoji = "🌊"; overallColor = C.mint; }
-  else if (avgValence >= 0.45) { overallMood = "Somewhere in Between"; overallEmoji = "🌤"; overallColor = C.blue; }
-  else if (avgEnergy >= 0.6) { overallMood = "Restless Energy"; overallEmoji = "🌀"; overallColor = C.purple; }
-  else { overallMood = "In Your Feels"; overallEmoji = "🌧"; overallColor = C.pink; }
+  // ═══════════════════════════════════════════════════════════════════════
+  // 4. GENRE DNA — weighted by artist rank, compared across time
+  // ═══════════════════════════════════════════════════════════════════════
+  const weightedGenres = (artists) => {
+    const scores = {};
+    artists.forEach((a, i) => {
+      const weight = artists.length - i; // Higher ranked = higher weight
+      (a.genres || []).forEach(g => { scores[g] = (scores[g] || 0) + weight; });
+    });
+    return Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  };
 
-  // Happy vs sad artists
-  const happyArtists = {}, sadArtists = {};
-  tracks.forEach(t => {
-    const f = featureMap[t.track.id];
-    if (!f) return;
-    const name = t.track.artists[0]?.name;
-    if (f.valence >= 0.55) happyArtists[name] = (happyArtists[name]||0) + 1;
-    else if (f.valence < 0.4) sadArtists[name] = (sadArtists[name]||0) + 1;
-  });
-  const topHappy = Object.entries(happyArtists).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([n])=>n);
-  const topSad = Object.entries(sadArtists).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([n])=>n);
+  const shortGenres = weightedGenres(shortArtists);
+  const longGenres = weightedGenres(longArtists);
+  const topGenres = shortGenres.slice(0, 7).map(([g]) => g);
 
-  return { days, avgValence, avgEnergy, overallMood, overallEmoji, overallColor, albumArts: albumArts.slice(0,9), topHappy, topSad, trackCount: tracks.length };
+  const longGenreNames = new Set(longGenres.slice(0, 15).map(([g]) => g));
+  const shortGenreNames = new Set(shortGenres.slice(0, 15).map(([g]) => g));
+  const emergingGenres = topGenres.filter(g => !longGenreNames.has(g)).slice(0, 3);
+  const fadingGenres = longGenres.slice(0, 15).map(([g]) => g).filter(g => !shortGenreNames.has(g)).slice(0, 3);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 5. ARTIST EVOLUTION — who's rising, who's fading, who's forever
+  // ═══════════════════════════════════════════════════════════════════════
+  const toMap = (list) => {
+    const m = {};
+    list.forEach((a, i) => {
+      m[a.name] = { rank: i, img: a.images?.[2]?.url || a.images?.[0]?.url, name: a.name };
+    });
+    return m;
+  };
+  const shortMap = toMap(shortArtists);
+  const medMap = toMap(medArtists);
+  const longMap = toMap(longArtists);
+
+  const comfortArtists = shortArtists
+    .filter(a => medMap[a.name] && longMap[a.name])
+    .slice(0, 5)
+    .map(a => ({ name: a.name, img: a.images?.[2]?.url || a.images?.[0]?.url }));
+
+  const rising = shortArtists
+    .filter(a => !longMap[a.name])
+    .slice(0, 5)
+    .map(a => ({ name: a.name, img: a.images?.[2]?.url || a.images?.[0]?.url }));
+
+  const fading = longArtists
+    .filter(a => !shortMap[a.name])
+    .slice(0, 4)
+    .map(a => ({ name: a.name, img: a.images?.[2]?.url || a.images?.[0]?.url }));
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 6. KEY TRACKS — your #1 now vs your #1 of all time
+  // ═══════════════════════════════════════════════════════════════════════
+  const topTrackNow = shortTracks[0];
+  const topTrackAllTime = longTracks[0];
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 7. LISTENING SCORES — quantified identity
+  // ═══════════════════════════════════════════════════════════════════════
+
+  // Obscurity: how deep do you dig? (inverse of avg popularity)
+  const obscurity = Math.round(100 - avgPop);
+
+  // Loyalty: what % of your current artists have been with you long term
+  const loyaltyPct = shortArtists.length > 0
+    ? Math.round((shortArtists.filter(a => longMap[a.name]).length / shortArtists.length) * 100)
+    : 0;
+
+  // Diversity: how many unique artists in your recent top 50
+  const uniqueShortArtists = new Set(shortTracks.map(t => t.artists[0]?.name)).size;
+  const diversityPct = Math.round((uniqueShortArtists / Math.max(shortTracks.length, 1)) * 100);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 8. LISTENING PERSONALITY — the archetype
+  // ═══════════════════════════════════════════════════════════════════════
+  let personality, personalityEmoji, personalityDesc;
+  if (obscurity >= 55 && loyaltyPct <= 35) {
+    personality = "The Explorer"; personalityEmoji = "🧭";
+    personalityDesc = "You chase the unknown. Your taste is restless, always evolving — you'd rather discover than replay.";
+  } else if (obscurity >= 55 && loyaltyPct > 35) {
+    personality = "The Curator"; personalityEmoji = "🎨";
+    personalityDesc = "Deep cuts and loyalty. You know what you love and you find the hidden gems within it.";
+  } else if (obscurity < 35 && loyaltyPct <= 35) {
+    personality = "The Drifter"; personalityEmoji = "🌊";
+    personalityDesc = "You follow the current. New sounds find you, and you let them carry you wherever they go.";
+  } else if (obscurity < 35 && loyaltyPct > 55) {
+    personality = "The Devotee"; personalityEmoji = "🔥";
+    personalityDesc = "You love who you love. Your favorites are your favorites — and that's a kind of integrity.";
+  } else if (diversityPct >= 65) {
+    personality = "The Omnivore"; personalityEmoji = "🌈";
+    personalityDesc = "You resist categories. Your taste is wide, unpredictable, and honestly kind of impressive.";
+  } else {
+    personality = "The Shapeshifter"; personalityEmoji = "🦋";
+    personalityDesc = "You don't fit a mold. Your listening shifts with your life — and that's the most honest thing music can do.";
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 9. MOOD NARRATIVE — a sentence that ties it together
+  // ═══════════════════════════════════════════════════════════════════════
+  const topArtistName = shortArtists[0]?.name || "your favorites";
+  const topGenre = topGenres[0] || "eclectic sounds";
+  let narrative;
+  if (days.length >= 3) {
+    const moodShift = days[days.length-1].vibe - days[0].vibe;
+    if (moodShift > 0.15) narrative = `Your week started quiet and built toward something brighter. ${topArtistName} has been the soundtrack to that shift.`;
+    else if (moodShift < -0.15) narrative = `You started the week high and have been settling into something more introspective. Lots of ${topGenre} in that descent.`;
+    else narrative = `Your week has been steady — consistently drawn to ${topGenre} with ${topArtistName} anchoring the mood.`;
+  } else {
+    narrative = `Right now, your listening is centered around ${topGenre}. ${topArtistName} is your gravity.`;
+  }
+
+  return {
+    days, overallMood, overallEmoji, overallColor, overallVibe, overallDesc, narrative,
+    albumArts: albumArts.slice(0, 9),
+    topGenres, emergingGenres, fadingGenres,
+    comfortArtists, rising, fading,
+    topTrackNow, topTrackAllTime,
+    obscurity, loyaltyPct, diversityPct, explicitPct,
+    personality, personalityEmoji, personalityDesc,
+    trackCount: Math.max(vibeSource.length, recentItems.length),
+  };
 }
 
+// ─── Mood Report UI ─────────────────────────────────────────────────────
 function MoodReport({ onContinue }) {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
   const [revealed, setRevealed] = useState(false);
-  const reportRef = useRef(null);
+  const [tab, setTab] = useState(0);
 
   useEffect(() => {
-    analyzeMood().then(d => { setData(d); setLoading(false); setTimeout(() => setRevealed(true), 300); });
+    analyzeMood().then(d => {
+      setData(d);
+      setLoading(false);
+      setTimeout(() => setRevealed(true), 400);
+    }).catch(() => { setLoading(false); });
   }, []);
 
   if (loading) return (
-    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"80vh",textAlign:"center",animation:"fadeIn 0.3s ease"}}>
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"80vh",textAlign:"center"}}>
       <div style={{fontSize:48,marginBottom:16,animation:"float 2s ease-in-out infinite"}}>🎧</div>
       <h2 style={{fontFamily:hf,fontSize:24,fontWeight:800,color:C.navy,margin:"0 0 8px"}}>Reading your music...</h2>
-      <p style={{color:C.text2,fontSize:14,fontFamily:bf}}>Analyzing your recent listening</p>
-      <div style={{width:200,height:4,background:C.border,borderRadius:99,marginTop:20,overflow:"hidden"}}>
-        <div style={{width:"60%",height:"100%",background:`linear-gradient(90deg,${C.mint},${C.purple})`,borderRadius:99,animation:"loading 1.5s ease-in-out infinite"}} />
+      <p style={{color:C.text2,fontSize:14,fontFamily:bf,maxWidth:280,margin:"0 auto"}}>Analyzing your listening across time</p>
+      <div style={{width:200,height:4,background:C.border,borderRadius:99,marginTop:24,overflow:"hidden"}}>
+        <div style={{height:"100%",background:`linear-gradient(90deg,${C.mint},${C.purple})`,borderRadius:99,animation:"loading 1.5s ease-in-out infinite"}} />
       </div>
       <style>{`@keyframes loading{0%{width:20%;margin-left:0}50%{width:60%;margin-left:20%}100%{width:20%;margin-left:80%}}@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}`}</style>
     </div>
@@ -310,82 +442,243 @@ function MoodReport({ onContinue }) {
   if (!data) return (
     <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"80vh",textAlign:"center"}}>
       <div style={{fontSize:48,marginBottom:16}}>🎵</div>
-      <h2 style={{fontFamily:hf,fontSize:24,fontWeight:800,color:C.navy,margin:"0 0 8px"}}>Not enough listening data yet</h2>
-      <p style={{color:C.text2,fontSize:14,fontFamily:bf,maxWidth:300,margin:"0 auto 24px"}}>Listen to a few more songs on Spotify, then come back.</p>
+      <h2 style={{fontFamily:hf,fontSize:24,fontWeight:800,color:C.navy,margin:"0 0 8px"}}>Couldn't read your music yet</h2>
+      <p style={{color:C.text2,fontSize:14,fontFamily:bf,maxWidth:300,margin:"0 auto 24px"}}>Try signing out and back in to refresh your Spotify connection.</p>
       <button onClick={onContinue} style={{background:C.mint,border:"none",borderRadius:99,padding:"14px 36px",color:C.navy,fontFamily:hf,fontWeight:700,fontSize:16,cursor:"pointer"}}>Continue anyway</button>
     </div>
   );
 
   const d = data;
-  return (
-    <div style={{maxWidth:440,margin:"0 auto",animation:revealed?"fadeIn 0.6s ease":"none",opacity:revealed?1:0}}>
-      {/* The shareable card */}
-      <div ref={reportRef} style={{background:`linear-gradient(145deg, ${C.navy} 0%, #2a3154 100%)`,borderRadius:24,padding:28,color:C.white,position:"relative",overflow:"hidden"}}>
-        {/* Subtle accent */}
-        <div style={{position:"absolute",top:-40,right:-40,width:160,height:160,borderRadius:"50%",background:d.overallColor+"22"}} />
-        <div style={{position:"absolute",bottom:-30,left:-30,width:120,height:120,borderRadius:"50%",background:C.purple+"15"}} />
 
-        {/* Header */}
+  // Reusable artist row
+  const ArtistRow = ({a}) => (
+    <div style={{display:"flex",alignItems:"center",gap:10,padding:"7px 0"}}>
+      {a.img ? <img src={a.img} alt="" style={{width:32,height:32,borderRadius:"50%",objectFit:"cover"}} />
+        : <div style={{width:32,height:32,borderRadius:"50%",background:"rgba(255,255,255,0.1)"}} />}
+      <span style={{fontSize:14,fontFamily:bf,fontWeight:600}}>{a.name}</span>
+    </div>
+  );
+
+  // Reusable track row
+  const TrackRow = ({t, label}) => t ? (
+    <div style={{display:"flex",alignItems:"center",gap:12,padding:14,background:C.bg,borderRadius:14}}>
+      {t.album?.images?.[1]?.url && <img src={t.album.images[1].url} alt="" style={{width:52,height:52,borderRadius:10}} />}
+      <div style={{flex:1,minWidth:0}}>
+        <p style={{fontSize:11,color:C.text2,fontFamily:bf,margin:"0 0 2px",textTransform:"uppercase",letterSpacing:"0.5px"}}>{label}</p>
+        <p style={{fontFamily:hf,fontWeight:700,fontSize:15,color:C.navy,margin:0,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{t.name}</p>
+        <p style={{fontSize:12,color:C.text2,margin:0}}>{t.artists?.[0]?.name}</p>
+      </div>
+    </div>
+  ) : null;
+
+  return (
+    <div style={{maxWidth:440,margin:"0 auto",opacity:revealed?1:0,transition:"opacity 0.6s ease"}}>
+
+      {/* ═══════════════════════════════════════════════════════════════════
+          THE CARD — the screenshotable piece, the viral asset
+          ═══════════════════════════════════════════════════════════════════ */}
+      <div style={{
+        background:`linear-gradient(155deg, ${C.navy} 0%, #1a2240 55%, ${d.overallColor}18 100%)`,
+        borderRadius:24, padding:"28px 24px", color:C.white, position:"relative", overflow:"hidden", marginBottom:20,
+      }}>
+        {/* Background orbs */}
+        <div style={{position:"absolute",top:-50,right:-50,width:180,height:180,borderRadius:"50%",background:d.overallColor+"15"}} />
+        <div style={{position:"absolute",bottom:-35,left:-35,width:130,height:130,borderRadius:"50%",background:C.purple+"0C"}} />
+
         <div style={{position:"relative",zIndex:1}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:20}}>
-            <Logo size={24} /><span style={{fontFamily:hf,fontWeight:800,fontSize:14,letterSpacing:"1px",opacity:0.7}}>BUOY</span>
+          {/* Brand + date */}
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:22}}>
+            <div style={{display:"flex",alignItems:"center",gap:7}}>
+              <Logo size={20} />
+              <span style={{fontFamily:hf,fontWeight:800,fontSize:11,letterSpacing:"2.5px",opacity:0.45}}>BUOY</span>
+            </div>
+            <span style={{fontSize:10,opacity:0.25,fontFamily:bf}}>{new Date().toLocaleDateString("en",{month:"long",year:"numeric"})}</span>
           </div>
 
-          <div style={{fontSize:48,marginBottom:8}}>{d.overallEmoji}</div>
-          <h2 style={{fontFamily:hf,fontSize:28,fontWeight:800,margin:"0 0 4px",lineHeight:1.2}}>{d.overallMood}</h2>
-          <p style={{fontSize:13,opacity:0.6,fontFamily:bf,margin:"0 0 20px"}}>Based on {d.trackCount} songs this week</p>
+          {/* Mood headline */}
+          <div style={{marginBottom:22}}>
+            <div style={{fontSize:42,marginBottom:8}}>{d.overallEmoji}</div>
+            <h2 style={{fontFamily:hf,fontSize:32,fontWeight:900,margin:"0 0 10px",lineHeight:1.05,letterSpacing:"-0.5px"}}>{d.overallMood}</h2>
+            <p style={{fontSize:13,opacity:0.6,fontFamily:bf,margin:0,lineHeight:1.55,maxWidth:340}}>{d.overallDesc}</p>
+          </div>
 
           {/* Album art grid */}
           {d.albumArts.length >= 4 && (
-            <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(d.albumArts.length,3)},1fr)`,gap:4,marginBottom:20,borderRadius:12,overflow:"hidden"}}>
-              {d.albumArts.slice(0, Math.min(d.albumArts.length >= 9 ? 9 : d.albumArts.length >= 6 ? 6 : 4, 9)).map((a,i) => (
+            <div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:3,marginBottom:22,borderRadius:14,overflow:"hidden"}}>
+              {d.albumArts.slice(0, 9).map((a,i) => (
                 <img key={i} src={a} alt="" style={{width:"100%",aspectRatio:"1",objectFit:"cover",display:"block"}} />
               ))}
             </div>
           )}
 
-          {/* Daily mood dots */}
-          <div style={{marginBottom:20}}>
-            <p style={{fontSize:11,opacity:0.5,fontFamily:bf,margin:"0 0 8px",textTransform:"uppercase",letterSpacing:"1px"}}>Your week</p>
-            <div style={{display:"flex",gap:6,alignItems:"flex-end"}}>
-              {d.days.map((day,i) => {
-                const h = 20 + day.valence * 40;
-                const dayLabel = new Date(day.date+"T12:00:00").toLocaleDateString("en",{weekday:"short"}).slice(0,2);
-                return (
-                  <div key={i} style={{flex:1,textAlign:"center"}}>
-                    <div style={{width:"100%",height:h,background:day.color,borderRadius:6,marginBottom:4,transition:"all 0.3s ease"}} title={`${day.mood}: ${day.trackCount} songs`} />
-                    <span style={{fontSize:9,opacity:0.5,fontFamily:bf}}>{dayLabel}</span>
-                  </div>
-                );
-              })}
+          {/* Personality badge */}
+          <div style={{background:"rgba(255,255,255,0.06)",borderRadius:14,padding:"16px 18px",marginBottom:18}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+              <span style={{fontSize:22}}>{d.personalityEmoji}</span>
+              <span style={{fontFamily:hf,fontWeight:800,fontSize:20}}>{d.personality}</span>
             </div>
+            <p style={{fontSize:12,opacity:0.55,fontFamily:bf,margin:0,lineHeight:1.45}}>{d.personalityDesc}</p>
           </div>
 
-          {/* Mood artists */}
-          <div style={{display:"flex",gap:16}}>
-            {d.topHappy.length>0 && (
-              <div style={{flex:1}}>
-                <p style={{fontSize:11,opacity:0.5,fontFamily:bf,margin:"0 0 4px"}}>When you're up ☀️</p>
-                <p style={{fontSize:13,fontFamily:hf,fontWeight:700,margin:0,lineHeight:1.4}}>{d.topHappy.join(", ")}</p>
+          {/* Stats row */}
+          <div style={{display:"flex",gap:6,marginBottom:18}}>
+            {[
+              {v:d.obscurity,l:"Obscure",c:d.overallColor},
+              {v:d.loyaltyPct,l:"Loyal",c:C.mint},
+              {v:d.diversityPct,l:"Diverse",c:C.blue},
+              {v:d.explicitPct,l:"Explicit",c:C.pink},
+            ].map(s => (
+              <div key={s.l} style={{flex:1,background:"rgba(255,255,255,0.05)",borderRadius:10,padding:"10px 6px",textAlign:"center"}}>
+                <div style={{fontFamily:hf,fontWeight:800,fontSize:20,color:s.c}}>{s.v}<span style={{fontSize:12,opacity:0.6}}>%</span></div>
+                <div style={{fontSize:9,opacity:0.35,fontFamily:bf,marginTop:2}}>{s.l}</div>
               </div>
-            )}
-            {d.topSad.length>0 && (
-              <div style={{flex:1}}>
-                <p style={{fontSize:11,opacity:0.5,fontFamily:bf,margin:"0 0 4px"}}>When you're down 🌧</p>
-                <p style={{fontSize:13,fontFamily:hf,fontWeight:700,margin:0,lineHeight:1.4}}>{d.topSad.join(", ")}</p>
-              </div>
-            )}
+            ))}
           </div>
+
+          {/* Week bars */}
+          {d.days.length > 1 && (
+            <div style={{marginBottom:18}}>
+              <p style={{fontSize:9,textTransform:"uppercase",letterSpacing:"2px",opacity:0.3,fontFamily:bf,margin:"0 0 10px"}}>This Week</p>
+              <div style={{display:"flex",gap:4,alignItems:"flex-end",height:56}}>
+                {d.days.map((day,i) => {
+                  const h = 14 + day.vibe * 42;
+                  const label = new Date(day.date+"T12:00:00").toLocaleDateString("en",{weekday:"narrow"});
+                  return (
+                    <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"flex-end",height:"100%"}}>
+                      <div style={{width:"100%",height:h,background:`linear-gradient(180deg,${day.color},${day.color}66)`,borderRadius:5}} />
+                      <span style={{fontSize:8,opacity:0.35,fontFamily:bf,marginTop:3}}>{label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Genre pills */}
+          {d.topGenres.length > 0 && (
+            <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+              {d.topGenres.map(g => (
+                <span key={g} style={{fontSize:10,padding:"4px 10px",borderRadius:99,background:"rgba(255,255,255,0.07)",fontFamily:bf,fontWeight:500,opacity:0.6}}>{g}</span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Actions below card */}
-      <div style={{textAlign:"center",marginTop:24}}>
-        <button onClick={onContinue}
-          style={{background:C.mint,border:"none",borderRadius:99,padding:"14px 36px",color:C.navy,fontFamily:hf,fontWeight:700,fontSize:16,cursor:"pointer",boxShadow:`0 4px 12px ${C.mint}33`,marginBottom:12,width:"100%"}}>
-          {d.avgValence >= 0.5 ? "I'm feeling good — share a song" : "I need a lift"}
+      {/* ═══════════════════════════════════════════════════════════════════
+          NARRATIVE — the human insight
+          ═══════════════════════════════════════════════════════════════════ */}
+      {d.narrative && (
+        <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:"16px 18px",marginBottom:16}}>
+          <p style={{fontFamily:bf,fontSize:14,color:C.navy,margin:0,lineHeight:1.55,fontStyle:"italic"}}>{d.narrative}</p>
+        </div>
+      )}
+
+      {/* ═══════════════════════════════════════════════════════════════════
+          DEEP DIVE TABS
+          ═══════════════════════════════════════════════════════════════════ */}
+      <div style={{display:"flex",gap:6,marginBottom:14}}>
+        {["Overview","Artists","Evolution"].map((label, i) => (
+          <button key={label} onClick={()=>setTab(i)} style={{
+            flex:1,background:tab===i?C.navy:C.white,color:tab===i?C.white:C.text2,
+            border:`1px solid ${tab===i?C.navy:C.border}`,borderRadius:10,padding:"10px 8px",
+            fontFamily:bf,fontWeight:tab===i?700:500,fontSize:13,cursor:"pointer",transition:"all 0.2s ease",
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {/* Tab: Overview */}
+      {tab===0 && (
+        <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeIn 0.3s ease"}}>
+          {d.topTrackNow && <TrackRow t={d.topTrackNow} label="Your #1 Right Now" />}
+          {d.topTrackAllTime && d.topTrackAllTime?.id !== d.topTrackNow?.id && (
+            <TrackRow t={d.topTrackAllTime} label="Your #1 of All Time" />
+          )}
+          <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18}}>
+            <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 12px"}}>The Numbers</p>
+            {[
+              {l:"Obscurity",v:`${d.obscurity}%`,d:d.obscurity>=55?"deep cuts lover":d.obscurity>=35?"balanced mix":"mainstream leaning"},
+              {l:"Loyalty",v:`${d.loyaltyPct}%`,d:d.loyaltyPct>=55?"ride or die":d.loyaltyPct>=30?"open minded":"always exploring"},
+              {l:"Diversity",v:`${d.diversityPct}%`,d:d.diversityPct>=65?"wide ranging":d.diversityPct>=40?"focused but flexible":"deep in a lane"},
+              {l:"Explicit",v:`${d.explicitPct}%`,d:d.explicitPct>=55?"unfiltered":d.explicitPct>=25?"mixed":"keeping it clean"},
+            ].map(r => (
+              <div key={r.l} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 0",borderBottom:`1px solid ${C.bg}`}}>
+                <span style={{fontFamily:bf,fontSize:13,color:C.text2}}>{r.l}</span>
+                <div style={{textAlign:"right"}}>
+                  <span style={{fontFamily:hf,fontWeight:700,fontSize:14,color:C.navy}}>{r.v}</span>
+                  <span style={{fontFamily:bf,fontSize:11,color:C.text2,marginLeft:6}}>{r.d}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Tab: Artists */}
+      {tab===1 && (
+        <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeIn 0.3s ease"}}>
+          {d.comfortArtists.length > 0 && (
+            <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18}}>
+              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Always There 💛</p>
+              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 8px",lineHeight:1.4}}>Your constants — top artists across every time range.</p>
+              {d.comfortArtists.map(a => <ArtistRow key={a.name} a={a} />)}
+            </div>
+          )}
+          {d.rising.length > 0 && (
+            <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18}}>
+              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Rising Fast 🔥</p>
+              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 8px",lineHeight:1.4}}>New to your top rotation. Something's pulling you here.</p>
+              {d.rising.map(a => <ArtistRow key={a.name} a={a} />)}
+            </div>
+          )}
+          {d.fading.length > 0 && (
+            <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18}}>
+              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Drifting Away 🌙</p>
+              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 8px",lineHeight:1.4}}>Used to be heavy in your rotation. Not so much anymore.</p>
+              {d.fading.map(a => <ArtistRow key={a.name} a={a} />)}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Tab: Evolution */}
+      {tab===2 && (
+        <div style={{display:"flex",flexDirection:"column",gap:12,animation:"fadeIn 0.3s ease"}}>
+          {d.emergingGenres.length > 0 && (
+            <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18}}>
+              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Genres You're Moving Toward 📈</p>
+              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 10px"}}>New in your short-term top genres. Your taste is shifting.</p>
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {d.emergingGenres.map(g => <span key={g} style={{fontSize:13,padding:"6px 14px",borderRadius:99,background:C.mint+"22",color:C.navy,fontFamily:bf,fontWeight:600}}>{g}</span>)}
+              </div>
+            </div>
+          )}
+          {d.fadingGenres.length > 0 && (
+            <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18}}>
+              <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1px",color:C.text2,fontFamily:bf,margin:"0 0 4px"}}>Genres You're Leaving Behind 📉</p>
+              <p style={{fontSize:12,color:C.text2,fontFamily:bf,margin:"0 0 10px"}}>Were dominant in your long-term listening. Fading now.</p>
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {d.fadingGenres.map(g => <span key={g} style={{fontSize:13,padding:"6px 14px",borderRadius:99,background:C.pink+"22",color:C.navy,fontFamily:bf,fontWeight:600}}>{g}</span>)}
+              </div>
+            </div>
+          )}
+          {d.emergingGenres.length === 0 && d.fadingGenres.length === 0 && (
+            <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:18,textAlign:"center"}}>
+              <p style={{fontSize:14,color:C.navy,fontFamily:bf,margin:0}}>Your taste has been remarkably consistent. You know what you like.</p>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* CTA */}
+      <div style={{textAlign:"center",marginTop:24,marginBottom:24}}>
+        <button onClick={onContinue} style={{
+          background:C.mint,border:"none",borderRadius:99,padding:"16px 36px",color:C.navy,
+          fontFamily:hf,fontWeight:700,fontSize:16,cursor:"pointer",boxShadow:`0 4px 16px ${C.mint}33`,width:"100%",
+        }}>
+          {d.overallVibe >= 0.5 ? "I'm feeling good — share a song" : "I need a lift — find me something"}
         </button>
-        <p style={{color:C.text2,fontSize:12,fontFamily:bf}}>Screenshot and share your mood card ↑</p>
+        <p style={{color:C.text2,fontSize:12,fontFamily:bf,marginTop:10}}>Screenshot your card and share it ↑</p>
       </div>
     </div>
   );
