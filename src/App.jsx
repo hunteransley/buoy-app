@@ -135,7 +135,8 @@ const MOODS = {
   good: { sub: [{ id:"happy", label:"HAPPY", color:C.mint }, { id:"energized", label:"ENERGIZED", color:C.gold }, { id:"calm", label:"CALM", color:C.blue }, { id:"grateful", label:"GRATEFUL", color:C.mint }] },
   bad: { sub: [{ id:"sad", label:"SAD", color:C.pink }, { id:"tired", label:"TIRED", color:C.pink }, { id:"anxious", label:"ANXIOUS", color:C.pink }, { id:"angry", label:"ANGRY", color:C.pink }] },
 };
-function getMood(id) { for (const g of Object.values(MOODS)) { const f=g.sub.find(s=>s.id===id); if(f) return f; } return null; }
+function getMood(id) { for(const g of Object.values(MOODS)){const f=g.sub.find(s=>s.id===id);if(f)return f;} return null; }
+const MOOD_COLORS = { happy:C.mint, energized:C.gold, calm:C.blue, grateful:C.mint, sad:C.pink, tired:C.pink, anxious:C.pink, angry:C.pink };
 
 // ─── Toast ──────────────────────────────────────────────────────────────
 function Toast({ message, type, onDone }) {
@@ -202,8 +203,97 @@ function AuthScreen() {
   );
 }
 
+// ─── First Share (Onboarding) ───────────────────────────────────────────
+function FirstShareScreen({ user, onComplete, showToast }) {
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [suggestions, setSuggestions] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [sending, setSending] = useState(null);
+  const [sent, setSent] = useState(false);
+  const [previewTrack, setPreviewTrack] = useState(null);
+  const hasSearched = results.length > 0 || (q.trim() && searching);
+
+  useEffect(() => {
+    const load = async () => {
+      const all = []; const seen = new Set();
+      const rec = await getRecent();
+      rec.forEach(s => { if(!seen.has(s.id)){seen.add(s.id);all.push(s);} });
+      const tp = await getTop();
+      tp.forEach(s => { if(!seen.has(s.id)){seen.add(s.id);all.push(s);} });
+      setSuggestions(all.slice(0,12));
+    };
+    load();
+  }, []);
+
+  const search = async () => { if(!q.trim()) return; setSearching(true); const r = await searchSpotify(q); setResults(r); setSearching(false); };
+  const send = async (song) => {
+    if (sending) return;
+    setSending(song.id);
+    try {
+      await supabase.from("songs").upsert({id:song.id,title:song.title,artist:song.artist,album_art:song.albumArt,preview_url:song.previewUrl,spotify_uri:song.spotifyUri,spotify_url:song.spotifyUrl},{onConflict:"id"});
+      await supabase.from("shares").insert({user_id:user.id,song_id:song.id,mood:"happy"});
+      await supabase.from("profiles").update({has_shared:true}).eq("id",user.id);
+      setSent(true);
+    } catch(e) { showToast("Couldn't share. Try again.","error"); }
+    setSending(null);
+  };
+
+  if (sent) return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"70vh",textAlign:"center",animation:"fadeIn 0.4s ease",padding:24}}>
+      <div style={{fontSize:64,marginBottom:16}}>🌊</div>
+      <h2 style={{fontFamily:hf,fontSize:28,fontWeight:800,color:C.navy,margin:"0 0 12px",lineHeight:1.2}}>Your song is out there</h2>
+      <p style={{color:C.text2,fontSize:15,fontFamily:bf,maxWidth:320,margin:"0 0 8px",lineHeight:1.5}}>It's now waiting for someone who needs it.</p>
+      <p style={{color:C.navy,fontSize:15,fontFamily:bf,fontWeight:600,maxWidth:320,margin:"0 0 32px",lineHeight:1.5}}>Every time your song helps someone, we'll let you know.</p>
+      <button onClick={onComplete} style={{background:C.mint,border:"none",borderRadius:99,padding:"14px 36px",color:C.navy,fontFamily:hf,fontWeight:700,fontSize:16,cursor:"pointer",boxShadow:`0 4px 12px ${C.mint}33`}}>Continue</button>
+    </div>
+  );
+
+  const displayList = hasSearched ? results : suggestions;
+  const renderSong = (s) => (
+    <div key={s.id}>
+      <div style={{background:previewTrack===s.id?C.white:C.bg,borderRadius:12,padding:12,display:"flex",alignItems:"center",gap:12,border:previewTrack===s.id?`2px solid ${C.mint}`:"2px solid transparent",cursor:"pointer"}}
+        onClick={()=>setPreviewTrack(previewTrack===s.id?null:s.id)}>
+        {s.albumArt?<img src={s.albumArt} alt="" style={{width:48,height:48,borderRadius:8}} />:<div style={{width:48,height:48,borderRadius:8,background:C.mint+"22",display:"flex",alignItems:"center",justifyContent:"center"}}>🎵</div>}
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontFamily:hf,fontWeight:700,fontSize:14,color:C.navy,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{s.title}</div>
+          <div style={{fontSize:12,color:C.text2}}>{s.artist}</div>
+        </div>
+        <button onClick={e=>{e.stopPropagation();send(s);}} disabled={!!sending}
+          style={{background:C.mint,border:"none",borderRadius:10,padding:"8px 16px",cursor:"pointer",color:C.navy,fontFamily:bf,fontWeight:700,fontSize:13,opacity:sending===s.id?0.5:1,whiteSpace:"nowrap"}}>
+          {sending===s.id?"Sending...":"Send 🌊"}
+        </button>
+      </div>
+      {previewTrack===s.id && <div style={{margin:"4px 0 8px",animation:"slideUp 0.2s ease"}}><SpotifyEmbed trackId={s.id} compact /></div>}
+    </div>
+  );
+
+  return (
+    <div style={{maxWidth:560,margin:"0 auto",padding:"0 4px"}}>
+      <div style={{textAlign:"center",marginBottom:28}}>
+        <Logo size={48} />
+        <h2 style={{fontFamily:hf,fontSize:26,fontWeight:800,color:C.navy,margin:"16px 0 8px",lineHeight:1.2}}>Share a song that<br/>makes you feel good</h2>
+        <p style={{color:C.text2,fontSize:14,fontFamily:bf,maxWidth:300,margin:"0 auto"}}>It'll reach someone who needs it.</p>
+      </div>
+      <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:20}}>
+        <div style={{display:"flex",gap:8}}>
+          <input type="text" value={q} onChange={e=>{setQ(e.target.value);if(!e.target.value.trim())setResults([]);}} onKeyDown={e=>e.key==="Enter"&&search()}
+            placeholder="Search for a song or artist..." style={{flex:1,background:C.bg,border:`1px solid ${C.border}`,borderRadius:10,padding:"10px 14px",color:C.navy,fontFamily:bf,fontSize:14,outline:"none"}} />
+          {hasSearched?(<button onClick={()=>{setQ("");setResults([]);}} style={{background:C.text2+"22",border:"none",borderRadius:10,padding:"10px 16px",color:C.text2,fontFamily:bf,fontWeight:700,fontSize:14,cursor:"pointer"}}>✕</button>
+          ):(<button onClick={search} disabled={searching||!q.trim()} style={{background:C.navy,border:"none",borderRadius:10,padding:"10px 20px",color:C.white,fontFamily:bf,fontWeight:700,fontSize:14,cursor:"pointer",opacity:(!q.trim()||searching)?0.5:1}}>{searching?"...":"Search"}</button>)}
+        </div>
+        {!hasSearched && suggestions.length>0 && <p style={{fontSize:12,color:C.text2+"99",margin:"12px 0 4px",fontFamily:bf}}>From your recent listening · tap to preview</p>}
+        <div style={{display:"flex",flexDirection:"column",gap:6,marginTop:8,maxHeight:420,overflowY:"auto"}}>
+          {displayList.map(renderSong)}
+          {hasSearched && results.length===0 && !searching && <div style={{textAlign:"center",color:C.text2,padding:24,fontFamily:bf}}>No songs found</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Mood Check-In ──────────────────────────────────────────────────────
-function MoodCheckIn({ onMoodSet }) {
+function MoodCheckIn({ onMoodSet, helpedSinceLastVisit }) {
   const [phase, setPhase] = useState("init");
   const [dir, setDir] = useState(null);
   const go = (w) => { setDir(w); setPhase("expand"); setTimeout(()=>setPhase(w), 350); };
@@ -211,6 +301,11 @@ function MoodCheckIn({ onMoodSet }) {
     <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"65vh",textAlign:"center"}}>
       {phase==="init" && (
         <div style={{animation:"fadeIn 0.3s ease"}}>
+          {helpedSinceLastVisit > 0 && (
+            <div style={{background:C.mint+"22",borderRadius:16,padding:"14px 24px",marginBottom:28,animation:"slideUp 0.4s ease"}}>
+              <p style={{fontFamily:hf,fontWeight:700,fontSize:16,color:C.navy,margin:0}}>🙌 You helped {helpedSinceLastVisit} {helpedSinceLastVisit===1?"person":"people"} since last time</p>
+            </div>
+          )}
           <Logo size={56} />
           <h1 style={{fontFamily:hf,fontSize:42,fontWeight:800,color:C.navy,margin:"20px 0 0",lineHeight:1.1}}>How<br/>are you<br/>doing?</h1>
           <div style={{display:"flex",gap:16,marginTop:40,flexWrap:"wrap",justifyContent:"center"}}>
