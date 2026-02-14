@@ -170,7 +170,7 @@ function SpotifyEmbed({ trackId, compact }) {
   );
 }
 
-// ─── Auth Screen (Spotify-first) ────────────────────────────────────────
+// ─── Auth Screen ────────────────────────────────────────────────────────
 function AuthScreen() {
   const [loading, setLoading] = useState(false);
   const login = async () => {
@@ -187,18 +187,206 @@ function AuthScreen() {
     <div style={{minHeight:"100vh",background:C.bg,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:24}}>
       <AccentBar />
       <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800;900&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
-      <style>{`@keyframes slideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}} *{box-sizing:border-box}`}</style>
+      <style>{`@keyframes slideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}@keyframes fadeIn{from{opacity:0}to{opacity:1}}@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}*{box-sizing:border-box}`}</style>
       <Logo size={64} />
-      <h1 style={{fontFamily:hf,fontSize:36,fontWeight:800,color:C.navy,margin:"20px 0 8px"}}>BUOY</h1>
-      <p style={{color:C.text2,fontSize:15,fontFamily:bf,textAlign:"center",maxWidth:320,marginBottom:32}}>Share music when you feel good.<br/>Receive music when you don't.</p>
+      <h1 style={{fontFamily:hf,fontSize:36,fontWeight:800,color:C.navy,margin:"20px 0 12px"}}>BUOY</h1>
+      <p style={{color:C.navy,fontSize:18,fontFamily:hf,fontWeight:700,textAlign:"center",maxWidth:320,marginBottom:6}}>Your music knows how you feel.</p>
+      <p style={{color:C.text2,fontSize:14,fontFamily:bf,textAlign:"center",maxWidth:300,marginBottom:32}}>Connect Spotify and we'll show you.</p>
       <button onClick={login} disabled={loading}
         style={{background:C.spotify,border:"none",borderRadius:99,padding:"16px 40px",color:C.white,fontFamily:hf,fontWeight:700,fontSize:17,cursor:"pointer",display:"flex",alignItems:"center",gap:10,opacity:loading?0.7:1,boxShadow:`0 4px 16px ${C.spotify}44`}}>
         <svg width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/></svg>
-        {loading ? "Connecting..." : "Continue with Spotify"}
+        {loading ? "Reading your vibe..." : "See How You've Been Feeling"}
       </button>
-      <p style={{color:C.text2+"88",fontSize:12,marginTop:16,fontFamily:bf,textAlign:"center",maxWidth:280}}>
-        We'll use your Spotify to find songs and build your Buoy playlist. No password needed.
-      </p>
+      <p style={{color:C.text2+"88",fontSize:12,marginTop:16,fontFamily:bf,textAlign:"center",maxWidth:280}}>Takes 10 seconds. No password needed.</p>
+    </div>
+  );
+}
+
+// ─── Mood Report (the hook) ──────────────────────────────────────────────
+async function analyzeMood() {
+  // Get recently played (up to 50)
+  const recent = await spGet("https://api.spotify.com/v1/me/player/recently-played?limit=50");
+  if (!recent?.items?.length) return null;
+
+  const tracks = recent.items;
+  const trackIds = [...new Set(tracks.map(t => t.track.id))];
+
+  // Get audio features for all tracks
+  const features = await spGet(`https://api.spotify.com/v1/audio-features?ids=${trackIds.join(",")}`);
+  if (!features?.audio_features) return null;
+
+  const featureMap = {};
+  features.audio_features.forEach(f => { if(f) featureMap[f.id] = f; });
+
+  // Group by day
+  const dayMap = {};
+  tracks.forEach(t => {
+    const day = t.played_at.slice(0, 10);
+    if (!dayMap[day]) dayMap[day] = [];
+    const f = featureMap[t.track.id];
+    if (f) dayMap[day].push({
+      track: t.track,
+      valence: f.valence,
+      energy: f.energy,
+      danceability: f.danceability,
+      tempo: f.tempo,
+      played_at: t.played_at,
+    });
+  });
+
+  // Calculate daily averages
+  const days = Object.entries(dayMap).sort(([a],[b]) => a.localeCompare(b)).map(([date, items]) => {
+    const avg = (arr, key) => arr.reduce((s, i) => s + i[key], 0) / arr.length;
+    const v = avg(items, "valence");
+    const e = avg(items, "energy");
+    let mood, emoji, color;
+    if (v >= 0.6 && e >= 0.6) { mood = "Energized"; emoji = "⚡"; color = C.gold; }
+    else if (v >= 0.6 && e < 0.6) { mood = "Calm"; emoji = "🌊"; color = C.blue; }
+    else if (v >= 0.4 && v < 0.6) { mood = "Neutral"; emoji = "😐"; color = C.text2; }
+    else if (v < 0.4 && e >= 0.5) { mood = "Restless"; emoji = "🌀"; color = C.purple; }
+    else { mood = "Low"; emoji = "🌧"; color = C.pink; }
+    return { date, mood, emoji, color, valence: v, energy: e, trackCount: items.length, topTrack: items[0]?.track };
+  });
+
+  // Overall stats
+  const allValence = tracks.map(t => featureMap[t.track.id]?.valence).filter(Boolean);
+  const allEnergy = tracks.map(t => featureMap[t.track.id]?.energy).filter(Boolean);
+  const avgValence = allValence.reduce((s, v) => s + v, 0) / allValence.length;
+  const avgEnergy = allEnergy.reduce((s, v) => s + v, 0) / allEnergy.length;
+
+  // Top album arts (unique, for the visual grid)
+  const seen = new Set();
+  const albumArts = [];
+  tracks.forEach(t => {
+    const art = t.track.album.images?.[1]?.url || t.track.album.images?.[0]?.url;
+    if (art && !seen.has(art)) { seen.add(art); albumArts.push(art); }
+  });
+
+  // Overall mood label
+  let overallMood, overallEmoji, overallColor;
+  if (avgValence >= 0.6 && avgEnergy >= 0.6) { overallMood = "Energized"; overallEmoji = "⚡"; overallColor = C.gold; }
+  else if (avgValence >= 0.6) { overallMood = "Feeling Good"; overallEmoji = "🌊"; overallColor = C.mint; }
+  else if (avgValence >= 0.45) { overallMood = "Somewhere in Between"; overallEmoji = "🌤"; overallColor = C.blue; }
+  else if (avgEnergy >= 0.6) { overallMood = "Restless Energy"; overallEmoji = "🌀"; overallColor = C.purple; }
+  else { overallMood = "In Your Feels"; overallEmoji = "🌧"; overallColor = C.pink; }
+
+  // Happy vs sad artists
+  const happyArtists = {}, sadArtists = {};
+  tracks.forEach(t => {
+    const f = featureMap[t.track.id];
+    if (!f) return;
+    const name = t.track.artists[0]?.name;
+    if (f.valence >= 0.55) happyArtists[name] = (happyArtists[name]||0) + 1;
+    else if (f.valence < 0.4) sadArtists[name] = (sadArtists[name]||0) + 1;
+  });
+  const topHappy = Object.entries(happyArtists).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([n])=>n);
+  const topSad = Object.entries(sadArtists).sort((a,b)=>b[1]-a[1]).slice(0,3).map(([n])=>n);
+
+  return { days, avgValence, avgEnergy, overallMood, overallEmoji, overallColor, albumArts: albumArts.slice(0,9), topHappy, topSad, trackCount: tracks.length };
+}
+
+function MoodReport({ onContinue }) {
+  const [loading, setLoading] = useState(true);
+  const [data, setData] = useState(null);
+  const [revealed, setRevealed] = useState(false);
+  const reportRef = useRef(null);
+
+  useEffect(() => {
+    analyzeMood().then(d => { setData(d); setLoading(false); setTimeout(() => setRevealed(true), 300); });
+  }, []);
+
+  if (loading) return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"80vh",textAlign:"center",animation:"fadeIn 0.3s ease"}}>
+      <div style={{fontSize:48,marginBottom:16,animation:"float 2s ease-in-out infinite"}}>🎧</div>
+      <h2 style={{fontFamily:hf,fontSize:24,fontWeight:800,color:C.navy,margin:"0 0 8px"}}>Reading your music...</h2>
+      <p style={{color:C.text2,fontSize:14,fontFamily:bf}}>Analyzing your recent listening</p>
+      <div style={{width:200,height:4,background:C.border,borderRadius:99,marginTop:20,overflow:"hidden"}}>
+        <div style={{width:"60%",height:"100%",background:`linear-gradient(90deg,${C.mint},${C.purple})`,borderRadius:99,animation:"loading 1.5s ease-in-out infinite"}} />
+      </div>
+      <style>{`@keyframes loading{0%{width:20%;margin-left:0}50%{width:60%;margin-left:20%}100%{width:20%;margin-left:80%}}@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}`}</style>
+    </div>
+  );
+
+  if (!data) return (
+    <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",minHeight:"80vh",textAlign:"center"}}>
+      <div style={{fontSize:48,marginBottom:16}}>🎵</div>
+      <h2 style={{fontFamily:hf,fontSize:24,fontWeight:800,color:C.navy,margin:"0 0 8px"}}>Not enough listening data yet</h2>
+      <p style={{color:C.text2,fontSize:14,fontFamily:bf,maxWidth:300,margin:"0 auto 24px"}}>Listen to a few more songs on Spotify, then come back.</p>
+      <button onClick={onContinue} style={{background:C.mint,border:"none",borderRadius:99,padding:"14px 36px",color:C.navy,fontFamily:hf,fontWeight:700,fontSize:16,cursor:"pointer"}}>Continue anyway</button>
+    </div>
+  );
+
+  const d = data;
+  return (
+    <div style={{maxWidth:440,margin:"0 auto",animation:revealed?"fadeIn 0.6s ease":"none",opacity:revealed?1:0}}>
+      {/* The shareable card */}
+      <div ref={reportRef} style={{background:`linear-gradient(145deg, ${C.navy} 0%, #2a3154 100%)`,borderRadius:24,padding:28,color:C.white,position:"relative",overflow:"hidden"}}>
+        {/* Subtle accent */}
+        <div style={{position:"absolute",top:-40,right:-40,width:160,height:160,borderRadius:"50%",background:d.overallColor+"22"}} />
+        <div style={{position:"absolute",bottom:-30,left:-30,width:120,height:120,borderRadius:"50%",background:C.purple+"15"}} />
+
+        {/* Header */}
+        <div style={{position:"relative",zIndex:1}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:20}}>
+            <Logo size={24} /><span style={{fontFamily:hf,fontWeight:800,fontSize:14,letterSpacing:"1px",opacity:0.7}}>BUOY</span>
+          </div>
+
+          <div style={{fontSize:48,marginBottom:8}}>{d.overallEmoji}</div>
+          <h2 style={{fontFamily:hf,fontSize:28,fontWeight:800,margin:"0 0 4px",lineHeight:1.2}}>{d.overallMood}</h2>
+          <p style={{fontSize:13,opacity:0.6,fontFamily:bf,margin:"0 0 20px"}}>Based on {d.trackCount} songs this week</p>
+
+          {/* Album art grid */}
+          {d.albumArts.length >= 4 && (
+            <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(d.albumArts.length,3)},1fr)`,gap:4,marginBottom:20,borderRadius:12,overflow:"hidden"}}>
+              {d.albumArts.slice(0, Math.min(d.albumArts.length >= 9 ? 9 : d.albumArts.length >= 6 ? 6 : 4, 9)).map((a,i) => (
+                <img key={i} src={a} alt="" style={{width:"100%",aspectRatio:"1",objectFit:"cover",display:"block"}} />
+              ))}
+            </div>
+          )}
+
+          {/* Daily mood dots */}
+          <div style={{marginBottom:20}}>
+            <p style={{fontSize:11,opacity:0.5,fontFamily:bf,margin:"0 0 8px",textTransform:"uppercase",letterSpacing:"1px"}}>Your week</p>
+            <div style={{display:"flex",gap:6,alignItems:"flex-end"}}>
+              {d.days.map((day,i) => {
+                const h = 20 + day.valence * 40;
+                const dayLabel = new Date(day.date+"T12:00:00").toLocaleDateString("en",{weekday:"short"}).slice(0,2);
+                return (
+                  <div key={i} style={{flex:1,textAlign:"center"}}>
+                    <div style={{width:"100%",height:h,background:day.color,borderRadius:6,marginBottom:4,transition:"all 0.3s ease"}} title={`${day.mood}: ${day.trackCount} songs`} />
+                    <span style={{fontSize:9,opacity:0.5,fontFamily:bf}}>{dayLabel}</span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Mood artists */}
+          <div style={{display:"flex",gap:16}}>
+            {d.topHappy.length>0 && (
+              <div style={{flex:1}}>
+                <p style={{fontSize:11,opacity:0.5,fontFamily:bf,margin:"0 0 4px"}}>When you're up ☀️</p>
+                <p style={{fontSize:13,fontFamily:hf,fontWeight:700,margin:0,lineHeight:1.4}}>{d.topHappy.join(", ")}</p>
+              </div>
+            )}
+            {d.topSad.length>0 && (
+              <div style={{flex:1}}>
+                <p style={{fontSize:11,opacity:0.5,fontFamily:bf,margin:"0 0 4px"}}>When you're down 🌧</p>
+                <p style={{fontSize:13,fontFamily:hf,fontWeight:700,margin:0,lineHeight:1.4}}>{d.topSad.join(", ")}</p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Actions below card */}
+      <div style={{textAlign:"center",marginTop:24}}>
+        <button onClick={onContinue}
+          style={{background:C.mint,border:"none",borderRadius:99,padding:"14px 36px",color:C.navy,fontFamily:hf,fontWeight:700,fontSize:16,cursor:"pointer",boxShadow:`0 4px 12px ${C.mint}33`,marginBottom:12,width:"100%"}}>
+          {d.avgValence >= 0.5 ? "I'm feeling good — share a song" : "I need a lift"}
+        </button>
+        <p style={{color:C.text2,fontSize:12,fontFamily:bf}}>Screenshot and share your mood card ↑</p>
+      </div>
     </div>
   );
 }
@@ -729,6 +917,7 @@ export default function BuoyApp() {
   const [spotifyName,setSpotifyName]=useState(null);
   const [spotifyReady,setSpotifyReady]=useState(false);
   const [hasShared,setHasShared]=useState(true);
+  const [showMoodReport,setShowMoodReport]=useState(false);
   const [checkins,setCheckins]=useState([]);
   const [helpedSinceLastVisit,setHelpedSinceLastVisit]=useState(0);
   const showToast=useCallback((message,type="info")=>{setToast({message,type,key:Date.now()});},[]);
@@ -748,7 +937,8 @@ export default function BuoyApp() {
       let shared = !!profile.has_shared;
       if(!shared){const {count}=await supabase.from("shares").select("*",{count:"exact",head:true}).eq("user_id",u.id);if(count>0){shared=true;await supabase.from("profiles").update({has_shared:true}).eq("id",u.id);}}
       setHasShared(shared);setSpotifyName(profile.display_name);
-    }else{setHasShared(false);}
+      if(!shared) setShowMoodReport(true);
+    }else{setHasShared(false);setShowMoodReport(true);}
     if(session.provider_token){
       spotifyState.token=session.provider_token;spotifyState.refreshToken=session.provider_refresh_token;setSpotifyReady(true);
       const me=await spGet("https://api.spotify.com/v1/me");
@@ -775,6 +965,19 @@ export default function BuoyApp() {
 
   if(authLoading) return <div style={{minHeight:"100vh",background:C.bg,display:"flex",alignItems:"center",justifyContent:"center"}}><Logo size={48}/></div>;
   if(!user) return <AuthScreen />;
+
+  // New user flow: Mood Report → First Share → Normal app
+  if(showMoodReport) return (
+    <div style={{minHeight:"100vh",background:C.bg,color:C.text1,fontFamily:bf}}>
+      <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800;900&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+      <style>{`@keyframes slideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}@keyframes fadeIn{from{opacity:0}to{opacity:1}}@keyframes float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}*{box-sizing:border-box}::selection{background:${C.mint}44}`}</style>
+      <AccentBar /><main style={{padding:"48px 20px 80px",marginLeft:6}}>
+        <MoodReport onContinue={()=>{setShowMoodReport(false);}} />
+      </main>
+      {toast&&<Toast message={toast.message} type={toast.type} onDone={()=>setToast(null)} key={toast.key} />}
+    </div>
+  );
+
   if(!hasShared) return (
     <div style={{minHeight:"100vh",background:C.bg,color:C.text1,fontFamily:bf}}>
       <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800;900&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
