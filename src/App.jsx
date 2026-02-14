@@ -859,6 +859,7 @@ function ProfileScreen({ user, notifs, spotifyName, checkins }) {
   const [artists,setArtists]=useState([]);
   const [helpedSongs,setHelpedSongs]=useState([]);
   const [confirmSignOut,setConfirmSignOut]=useState(false);
+  const [showReport,setShowReport]=useState(false);
   useEffect(()=>{if(user) load();},[user]);
   const load=async()=>{
     const {count:sc}=await supabase.from("shares").select("*",{count:"exact",head:true}).eq("user_id",user.id);
@@ -872,12 +873,29 @@ function ProfileScreen({ user, notifs, spotifyName, checkins }) {
   };
   const unread=notifs.filter(n=>!n.read).length;
   const totalActions=stats.shared+stats.saved;
+
+  if(showReport) return (
+    <div style={{maxWidth:560,margin:"0 auto"}}>
+      <button onClick={()=>setShowReport(false)} style={{background:"none",border:"none",color:C.text2,cursor:"pointer",fontFamily:bf,fontSize:14,padding:"8px 0",marginBottom:16}}>← Back to Profile</button>
+      <MoodReport onContinue={()=>setShowReport(false)} />
+    </div>
+  );
+
   return (
     <div style={{maxWidth:560,margin:"0 auto"}}>
       <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:24}}>
         <div style={{width:48,height:48,borderRadius:"50%",background:C.spotify+"22",display:"flex",alignItems:"center",justifyContent:"center"}}><span style={{fontSize:24}}>🎧</span></div>
         <div><h2 style={{fontFamily:hf,fontSize:24,fontWeight:800,color:C.navy,margin:0}}>{spotifyName||"Your Impact"}</h2><p style={{fontSize:12,color:C.spotify,fontFamily:bf,margin:0,fontWeight:600}}>Connected via Spotify</p></div>
       </div>
+      {/* Mood Report button */}
+      <button onClick={()=>setShowReport(true)} style={{width:"100%",background:`linear-gradient(135deg,${C.navy},#2a3154)`,border:"none",borderRadius:16,padding:"18px 20px",cursor:"pointer",display:"flex",alignItems:"center",gap:12,marginBottom:20}}>
+        <span style={{fontSize:28}}>🎧</span>
+        <div style={{textAlign:"left"}}>
+          <div style={{fontFamily:hf,fontWeight:700,fontSize:15,color:C.white}}>Your Mood Report</div>
+          <div style={{fontFamily:bf,fontSize:12,color:C.white,opacity:0.6}}>See what your music says about you</div>
+        </div>
+        <span style={{marginLeft:"auto",color:C.white,opacity:0.4,fontSize:18}}>→</span>
+      </button>
       {checkins.length>0&&<MoodCalendar checkins={checkins} />}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:28}}>
         {[{l:"Songs Shared",v:stats.shared,c:C.mint,i:"🎵"},{l:"People Helped",v:stats.helped,c:C.purple,i:"🙌"},{l:"Songs Saved",v:stats.saved,c:C.gold,i:"💛"}].map(s=>(
