@@ -695,17 +695,28 @@ function ProfileScreen({ user, notifs, spotifyName, checkins }) {
       </div>
 
       {/* Mood Report CTA */}
-      <button onClick={() => setShowReport(true)} style={{
-        width: "100%", background: `linear-gradient(135deg, ${C.navy}, #2a3154)`, border: "none", borderRadius: 18,
-        padding: "20px 22px", cursor: "pointer", display: "flex", alignItems: "center", gap: 14, marginBottom: 20,
-      }}>
-        <span style={{ fontSize: 28 }}>🎧</span>
-        <div style={{ textAlign: "left", flex: 1 }}>
-          <div style={{ fontFamily: hf, fontWeight: 700, fontSize: 15, color: C.white }}>Your Mood Report</div>
-          <div style={{ fontFamily: bf, fontSize: 12, color: C.white, opacity: 0.5 }}>What your music says about how you feel</div>
-        </div>
-        <span style={{ color: C.white, opacity: 0.3, fontSize: 18 }}>→</span>
-      </button>
+      {(() => {
+        const cd = getReportCooldown();
+        return (
+          <button onClick={() => { if (cd.canRun) setShowReport(true); }} style={{
+            width: "100%", background: cd.canRun ? `linear-gradient(135deg, ${C.navy}, #2a3154)` : C.white,
+            border: cd.canRun ? "none" : `1px solid ${C.border}`, borderRadius: 18,
+            padding: "20px 22px", cursor: cd.canRun ? "pointer" : "default", display: "flex", alignItems: "center", gap: 14, marginBottom: 20,
+            opacity: cd.canRun ? 1 : 0.85,
+          }}>
+            <span style={{ fontSize: 28 }}>{cd.canRun ? "🎧" : "⏳"}</span>
+            <div style={{ textAlign: "left", flex: 1 }}>
+              <div style={{ fontFamily: hf, fontWeight: 700, fontSize: 15, color: cd.canRun ? C.white : C.navy }}>
+                {cd.canRun ? "Your Mood Report is ready" : "Next reading available soon"}
+              </div>
+              <div style={{ fontFamily: bf, fontSize: 12, color: cd.canRun ? C.white : C.text2, opacity: cd.canRun ? 0.5 : 0.7 }}>
+                {cd.canRun ? "See what your music says about how you feel" : `${cd.daysLeft} day${cd.daysLeft !== 1 ? "s" : ""} until your next reading`}
+              </div>
+            </div>
+            {cd.canRun && <span style={{ color: C.white, opacity: 0.3, fontSize: 18 }}>→</span>}
+          </button>
+        );
+      })()}
 
       {/* Mood calendar */}
       {checkins.length > 0 && <MoodCalendar checkins={checkins} />}
@@ -1022,10 +1033,103 @@ async function analyzeMood() {
   }
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 9. MOOD NARRATIVE — a sentence that ties it together
+  // 9. DEEP INSIGHTS — specific, personal observations using real data
   // ═══════════════════════════════════════════════════════════════════════
   const topArtistName = shortArtists[0]?.name || "your favorites";
   const topGenre = topGenres[0] || "eclectic sounds";
+  const insights = [];
+
+  // --- Insight: #1 track now vs all time ---
+  if (topTrackNow && topTrackAllTime && topTrackNow.id !== topTrackAllTime.id) {
+    const nowArtist = topTrackNow.artists?.[0]?.name;
+    const allArtist = topTrackAllTime.artists?.[0]?.name;
+    if (nowArtist !== allArtist) {
+      insights.push(`Your #1 song right now is "${topTrackNow.name}" by ${nowArtist}, but your #1 of all time is "${topTrackAllTime.name}" by ${allArtist}. That gap says something — the version of you who fell in love with ${allArtist} is different from the one listening right now.`);
+    } else {
+      insights.push(`"${topTrackNow.name}" is your #1 right now, and ${nowArtist} also holds your all-time top spot with "${topTrackAllTime.name}." That kind of loyalty to an artist means they're not just music — they're emotional infrastructure.`);
+    }
+  } else if (topTrackNow && topTrackAllTime && topTrackNow.id === topTrackAllTime.id) {
+    insights.push(`"${topTrackNow.name}" by ${topTrackNow.artists?.[0]?.name} is your #1 right now AND your #1 of all time. You're not just listening — you're living in this song. It's doing something for you that nothing else can.`);
+  }
+
+  // --- Insight: Rising artist obsession ---
+  if (rising.length > 0) {
+    const r = rising[0];
+    if (rising.length === 1) {
+      insights.push(`${r.name} appeared in your rotation recently and wasn't there before. Something about them is meeting a need your usual artists aren't. Pay attention to that — new musical obsessions usually track with emotional shifts.`);
+    } else {
+      const names = rising.slice(0, 3).map(a => a.name);
+      const last = names.pop();
+      insights.push(`${names.join(", ")} and ${last} are all new in your heavy rotation. That's a lot of new emotional territory at once — you're either in a period of discovery or a period of change. Probably both.`);
+    }
+  }
+
+  // --- Insight: Comfort artists + what they mean ---
+  if (comfortArtists.length > 0 && rising.length > 0) {
+    const anchor = comfortArtists[0].name;
+    const newOne = rising[0].name;
+    insights.push(`You've held onto ${anchor} across every time range — they're your constant. But you're also making room for ${newOne}. That tension between comfort and exploration is where the most interesting emotional work happens.`);
+  } else if (comfortArtists.length >= 3) {
+    const names = comfortArtists.slice(0, 3).map(a => a.name);
+    insights.push(`${names[0]}, ${names[1]}, and ${names[2]} have been with you across every time period. Three artists that survived every mood, every phase, every season. They're not just favorites — they're part of your identity.`);
+  }
+
+  // --- Insight: Fading artists ---
+  if (fading.length > 0 && comfortArtists.length > 0) {
+    const gone = fading[0].name;
+    const stayed = comfortArtists[0].name;
+    insights.push(`${gone} used to be in your top rotation and now they're gone. Meanwhile ${stayed} hasn't moved. Whatever ${gone} was doing for you emotionally, you've either resolved it or found it somewhere else.`);
+  }
+
+  // --- Insight: Genre shift ---
+  if (emergingGenres.length > 0 && fadingGenres.length > 0) {
+    insights.push(`You're moving from ${fadingGenres[0]} toward ${emergingGenres[0]}. Genre shifts aren't random — they track with how you want to feel. ${fadingGenres[0]} served a purpose. ${emergingGenres[0]} is serving a different one now.`);
+  } else if (emergingGenres.length > 0) {
+    insights.push(`${emergingGenres[0]} is new in your top genres. You're reaching for sounds you didn't used to need. Something in your emotional landscape shifted and this genre is answering it.`);
+  }
+
+  // --- Insight: Week trajectory ---
+  if (days.length >= 3) {
+    const moodShift = days[days.length - 1].vibe - days[0].vibe;
+    const highDay = days.reduce((a, b) => a.vibe > b.vibe ? a : b);
+    const lowDay = days.reduce((a, b) => a.vibe < b.vibe ? a : b);
+    const highLabel = new Date(highDay.date + "T12:00:00").toLocaleDateString("en", { weekday: "long" });
+    const lowLabel = new Date(lowDay.date + "T12:00:00").toLocaleDateString("en", { weekday: "long" });
+
+    if (Math.abs(highDay.vibe - lowDay.vibe) > 0.2) {
+      insights.push(`Your highest-energy listening was on ${highLabel} and your lowest was ${lowLabel}. That's a significant swing — your music went from ${highDay.mood.toLowerCase()} to ${lowDay.mood.toLowerCase()} in the span of days. Whatever happened between those two days, your listening absorbed it.`);
+    } else if (moodShift > 0.12) {
+      insights.push(`Your week built upward — you started quieter and ended brighter. ${topArtistName} showed up more as the week went on. Your music tracked a recovery, whether you noticed it or not.`);
+    } else if (moodShift < -0.12) {
+      insights.push(`Your week descended — started higher and ended more introspective. That's not necessarily bad. Sometimes going inward is the most honest thing you can do.`);
+    }
+  }
+
+  // --- Insight: Volatility ---
+  if (volatility >= 45) {
+    insights.push(`Your day-to-day listening swings dramatically. Most people stay in a narrow emotional band through music — you don't. You're either processing a lot right now, or this is just how you're wired. Either way, your emotional range through music is unusually wide.`);
+  } else if (volatility <= 10 && days.length >= 3) {
+    insights.push(`Your listening has been remarkably steady this week. Same energy, same depth, same territory every day. You've found a groove — emotionally, not just musically. That kind of consistency usually means you're in a stable place.`);
+  }
+
+  // --- Insight: Obscurity + what it means ---
+  if (obscurity >= 65) {
+    insights.push(`Most of what you listen to, other people haven't heard of. That's not elitism — it's a sign that mainstream music doesn't reach wherever you are emotionally. You need something more specific, more niche, more yours.`);
+  } else if (obscurity <= 25) {
+    insights.push(`You gravitate toward music that millions of other people also love. There's something underrated about that — you're drawn to shared emotional experiences. The songs that move everyone move you too, and you're not ashamed of it.`);
+  }
+
+  // --- Insight: Explicit content as emotional signal ---
+  if (explicitPct >= 60) {
+    insights.push(`${explicitPct}% of your recent listening is explicit. Unfiltered lyrics tend to track with unfiltered emotional states — you're not looking for polish right now. You want raw.`);
+  } else if (explicitPct === 0 && vibeSource.length > 10) {
+    insights.push(`None of your recent listening is explicit. You're gravitating toward cleaner, more controlled expression — which can mean you're seeking calm, or that you're in a headspace where emotional intensity comes from melody and tone rather than words.`);
+  }
+
+  // Pick the 3-5 most relevant insights (they're already ordered by importance)
+  const deepInsights = insights.slice(0, 5);
+
+  // Keep the short narrative for the card
   let narrative;
   if (days.length >= 3) {
     const moodShift = days[days.length-1].vibe - days[0].vibe;
@@ -1037,7 +1141,7 @@ async function analyzeMood() {
   }
 
   return {
-    days, overallMood, overallEmoji, overallColor, overallVibe, overallDesc, narrative,
+    days, overallMood, overallEmoji, overallColor, overallVibe, overallDesc, narrative, deepInsights,
     albumArts: albumArts.slice(0, 9),
     topGenres, emergingGenres, fadingGenres,
     comfortArtists, rising, fading,
@@ -1049,7 +1153,26 @@ async function analyzeMood() {
 }
 
 // ─── Mood Report UI ─────────────────────────────────────────────────────
-function MoodReport({ onContinue }) {
+const REPORT_COOLDOWN_DAYS = 4;
+
+function getReportCooldown() {
+  try {
+    const last = localStorage.getItem("buoy_last_report");
+    if (!last) return { canRun: true, daysLeft: 0, lastRun: null };
+    const lastDate = new Date(last);
+    const now = new Date();
+    const diffMs = now - lastDate;
+    const diffDays = diffMs / (1000 * 60 * 60 * 24);
+    if (diffDays >= REPORT_COOLDOWN_DAYS) return { canRun: true, daysLeft: 0, lastRun: lastDate };
+    return { canRun: false, daysLeft: Math.ceil(REPORT_COOLDOWN_DAYS - diffDays), lastRun: lastDate };
+  } catch { return { canRun: true, daysLeft: 0, lastRun: null }; }
+}
+
+function saveReportTimestamp() {
+  try { localStorage.setItem("buoy_last_report", new Date().toISOString()); } catch {}
+}
+
+function MoodReport({ onContinue, isFirstRun }) {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
   const [revealed, setRevealed] = useState(false);
@@ -1060,6 +1183,10 @@ function MoodReport({ onContinue }) {
       setData(d);
       setLoading(false);
       setTimeout(() => setRevealed(true), 400);
+      // Save timestamp (don't save on first run — that's free)
+      if (d && !isFirstRun) saveReportTimestamp();
+      // First run always saves so cooldown starts
+      if (d && isFirstRun) saveReportTimestamp();
     }).catch(() => { setLoading(false); });
   }, []);
 
@@ -1202,9 +1329,18 @@ function MoodReport({ onContinue }) {
       </div>
 
       {/* ═══════════════════════════════════════════════════════════════════
-          NARRATIVE — the human insight
+          YOUR READING — the "holy shit how did it know" section
           ═══════════════════════════════════════════════════════════════════ */}
-      {d.narrative && (
+      {d.deepInsights && d.deepInsights.length > 0 && (
+        <div style={{background:C.white,borderRadius:18,border:`1px solid ${C.border}`,padding:"22px 20px",marginBottom:16,boxShadow:"0 2px 12px rgba(0,0,0,0.03)"}}>
+          <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1.5px",color:C.text2,fontFamily:bf,margin:"0 0 16px",fontWeight:600}}>Your Reading</p>
+          {d.deepInsights.map((insight, i) => (
+            <p key={i} style={{fontFamily:bf,fontSize:14,color:C.navy,margin:i < d.deepInsights.length - 1 ? "0 0 14px" : 0,lineHeight:1.6}}>{insight}</p>
+          ))}
+        </div>
+      )}
+      {/* Short narrative fallback if no deep insights */}
+      {(!d.deepInsights || d.deepInsights.length === 0) && d.narrative && (
         <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:"16px 18px",marginBottom:16}}>
           <p style={{fontFamily:bf,fontSize:14,color:C.navy,margin:0,lineHeight:1.55,fontStyle:"italic"}}>{d.narrative}</p>
         </div>
@@ -1479,7 +1615,7 @@ export default function BuoyApp() {
       <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700;800;900&family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
       <style>{globalCSS}</style>
       <AccentBar /><main style={{ padding: "48px 20px 80px", marginLeft: 5 }}>
-        <MoodReport onContinue={() => { setShowMoodReport(false); }} />
+        <MoodReport onContinue={() => { setShowMoodReport(false); }} isFirstRun={true} />
       </main>
       {toast && <Toast message={toast.message} type={toast.type} onDone={() => setToast(null)} key={toast.key} />}
     </div>
