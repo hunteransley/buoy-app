@@ -694,28 +694,43 @@ function ProfileScreen({ user, notifs, spotifyName, checkins }) {
         </div>
       </div>
 
-      {/* Mood Report CTA */}
+      {/* Mood Report — always viewable, regen timer shown */}
       {(() => {
-        const cd = getReportCooldown();
-        return (
-          <button onClick={() => { if (cd.canRun) setShowReport(true); }} style={{
-            width: "100%", background: cd.canRun ? `linear-gradient(135deg, ${C.navy}, #2a3154)` : C.white,
-            border: cd.canRun ? "none" : `1px solid ${C.border}`, borderRadius: 18,
-            padding: "20px 22px", cursor: cd.canRun ? "pointer" : "default", display: "flex", alignItems: "center", gap: 14, marginBottom: 20,
-            opacity: cd.canRun ? 1 : 0.85,
+        const regen = getRegenStatus();
+        const hasSaved = !!getSavedReport();
+        return (<>
+          <button onClick={() => setShowReport(true)} style={{
+            width: "100%", background: `linear-gradient(135deg, ${C.navy}, #2a3154)`, border: "none", borderRadius: 18,
+            padding: "20px 22px", cursor: "pointer", display: "flex", alignItems: "center", gap: 14, marginBottom: regen.canRegen && hasSaved ? 8 : 20,
           }}>
-            <span style={{ fontSize: 28 }}>{cd.canRun ? "🎧" : "⏳"}</span>
+            <span style={{ fontSize: 28 }}>🎧</span>
             <div style={{ textAlign: "left", flex: 1 }}>
-              <div style={{ fontFamily: hf, fontWeight: 700, fontSize: 15, color: cd.canRun ? C.white : C.navy }}>
-                {cd.canRun ? "Your Mood Report is ready" : "Next reading available soon"}
-              </div>
-              <div style={{ fontFamily: bf, fontSize: 12, color: cd.canRun ? C.white : C.text2, opacity: cd.canRun ? 0.5 : 0.7 }}>
-                {cd.canRun ? "See what your music says about how you feel" : `${cd.daysLeft} day${cd.daysLeft !== 1 ? "s" : ""} until your next reading`}
+              <div style={{ fontFamily: hf, fontWeight: 700, fontSize: 15, color: C.white }}>Your Mood Analysis</div>
+              <div style={{ fontFamily: bf, fontSize: 12, color: C.white, opacity: 0.5 }}>
+                {hasSaved ? "View your current analysis" : "See what your music says about your mood"}
               </div>
             </div>
-            {cd.canRun && <span style={{ color: C.white, opacity: 0.3, fontSize: 18 }}>→</span>}
+            <span style={{ color: C.white, opacity: 0.3, fontSize: 18 }}>→</span>
           </button>
-        );
+          {hasSaved && !regen.canRegen && (
+            <div style={{ textAlign: "center", marginBottom: 20 }}>
+              <p style={{ fontFamily: bf, fontSize: 12, color: C.text2, margin: 0 }}>New analysis available in {regen.daysLeft} day{regen.daysLeft !== 1 ? "s" : ""}</p>
+            </div>
+          )}
+          {hasSaved && regen.canRegen && (
+            <button onClick={() => {
+              // Clear saved report to force regen
+              try { localStorage.removeItem("buoy_report"); } catch {}
+              setShowReport(true);
+            }} style={{
+              width: "100%", background: C.mint, border: "none", borderRadius: 12,
+              padding: "12px 20px", cursor: "pointer", marginBottom: 20,
+              fontFamily: bf, fontWeight: 700, fontSize: 13, color: C.navy, textAlign: "center",
+            }}>
+              Run new analysis with fresh data
+            </button>
+          )}
+        </>);
       })()}
 
       {/* Mood calendar */}
@@ -1153,23 +1168,31 @@ async function analyzeMood() {
 }
 
 // ─── Mood Report UI ─────────────────────────────────────────────────────
-const REPORT_COOLDOWN_DAYS = 4;
+const REPORT_REGEN_DAYS = 7;
 
-function getReportCooldown() {
+function getSavedReport() {
   try {
-    const last = localStorage.getItem("buoy_last_report");
-    if (!last) return { canRun: true, daysLeft: 0, lastRun: null };
-    const lastDate = new Date(last);
-    const now = new Date();
-    const diffMs = now - lastDate;
-    const diffDays = diffMs / (1000 * 60 * 60 * 24);
-    if (diffDays >= REPORT_COOLDOWN_DAYS) return { canRun: true, daysLeft: 0, lastRun: lastDate };
-    return { canRun: false, daysLeft: Math.ceil(REPORT_COOLDOWN_DAYS - diffDays), lastRun: lastDate };
-  } catch { return { canRun: true, daysLeft: 0, lastRun: null }; }
+    const raw = localStorage.getItem("buoy_report");
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch { return null; }
 }
 
-function saveReportTimestamp() {
-  try { localStorage.setItem("buoy_last_report", new Date().toISOString()); } catch {}
+function saveReport(data) {
+  try {
+    localStorage.setItem("buoy_report", JSON.stringify({ data, generatedAt: new Date().toISOString() }));
+  } catch {}
+}
+
+function getRegenStatus() {
+  try {
+    const saved = getSavedReport();
+    if (!saved?.generatedAt) return { canRegen: true, daysLeft: 0 };
+    const genDate = new Date(saved.generatedAt);
+    const diffDays = (new Date() - genDate) / (1000 * 60 * 60 * 24);
+    if (diffDays >= REPORT_REGEN_DAYS) return { canRegen: true, daysLeft: 0 };
+    return { canRegen: false, daysLeft: Math.ceil(REPORT_REGEN_DAYS - diffDays) };
+  } catch { return { canRegen: true, daysLeft: 0 }; }
 }
 
 function MoodReport({ onContinue, isFirstRun }) {
@@ -1179,15 +1202,21 @@ function MoodReport({ onContinue, isFirstRun }) {
   const [tab, setTab] = useState(0);
 
   useEffect(() => {
-    analyzeMood().then(d => {
-      setData(d);
+    // If we have a saved report and this isn't a forced regen or first run, use it
+    const saved = getSavedReport();
+    if (saved?.data && !isFirstRun) {
+      setData(saved.data);
       setLoading(false);
-      setTimeout(() => setRevealed(true), 400);
-      // Save timestamp (don't save on first run — that's free)
-      if (d && !isFirstRun) saveReportTimestamp();
-      // First run always saves so cooldown starts
-      if (d && isFirstRun) saveReportTimestamp();
-    }).catch(() => { setLoading(false); });
+      setTimeout(() => setRevealed(true), 300);
+    } else {
+      // Generate fresh
+      analyzeMood().then(d => {
+        setData(d);
+        if (d) saveReport(d);
+        setLoading(false);
+        setTimeout(() => setRevealed(true), 400);
+      }).catch(() => { setLoading(false); });
+    }
   }, []);
 
   if (loading) return (
@@ -1328,21 +1357,10 @@ function MoodReport({ onContinue, isFirstRun }) {
         </div>
       </div>
 
-      {/* ═══════════════════════════════════════════════════════════════════
-          YOUR READING — the "holy shit how did it know" section
-          ═══════════════════════════════════════════════════════════════════ */}
-      {d.deepInsights && d.deepInsights.length > 0 && (
-        <div style={{background:C.white,borderRadius:18,border:`1px solid ${C.border}`,padding:"22px 20px",marginBottom:16,boxShadow:"0 2px 12px rgba(0,0,0,0.03)"}}>
-          <p style={{fontSize:11,textTransform:"uppercase",letterSpacing:"1.5px",color:C.text2,fontFamily:bf,margin:"0 0 16px",fontWeight:600}}>Your Reading</p>
-          {d.deepInsights.map((insight, i) => (
-            <p key={i} style={{fontFamily:bf,fontSize:14,color:C.navy,margin:i < d.deepInsights.length - 1 ? "0 0 14px" : 0,lineHeight:1.6}}>{insight}</p>
-          ))}
-        </div>
-      )}
-      {/* Short narrative fallback if no deep insights */}
-      {(!d.deepInsights || d.deepInsights.length === 0) && d.narrative && (
+      {/* Short narrative */}
+      {d.narrative && (
         <div style={{background:C.white,borderRadius:16,border:`1px solid ${C.border}`,padding:"16px 18px",marginBottom:16}}>
-          <p style={{fontFamily:bf,fontSize:14,color:C.navy,margin:0,lineHeight:1.55,fontStyle:"italic"}}>{d.narrative}</p>
+          <p style={{fontFamily:bf,fontSize:14,color:C.navy,margin:0,lineHeight:1.55}}>{d.narrative}</p>
         </div>
       )}
 
