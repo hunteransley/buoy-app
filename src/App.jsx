@@ -1605,8 +1605,37 @@ export default function BuoyApp() {
       const me = await spGet("https://api.spotify.com/v1/me");
       if (me) { setSpotifyName(me.display_name); await supabase.from("profiles").update({ spotify_id: me.id, display_name: me.display_name, spotify_access_token: session.provider_token, spotify_refresh_token: session.provider_refresh_token || spotifyState.refreshToken, spotify_token_expiry: Date.now() + 3600000 }).eq("id", u.id); }
     } else if (profile) {
-      if (profile.spotify_access_token && profile.spotify_token_expiry > Date.now()) { spotifyState.token = profile.spotify_access_token; spotifyState.refreshToken = profile.spotify_refresh_token; setSpotifyReady(true); }
-      else if (profile.spotify_refresh_token) { const r = await refreshSpotifyToken(profile.spotify_refresh_token); if (r) setSpotifyReady(true); else showToast("Spotify expired. Sign out and back in.", "error"); }
+      // Try stored token first
+      if (profile.spotify_access_token && profile.spotify_token_expiry > Date.now()) {
+        spotifyState.token = profile.spotify_access_token; spotifyState.refreshToken = profile.spotify_refresh_token; setSpotifyReady(true);
+      } else if (profile.spotify_refresh_token) {
+        // Try Supabase session refresh
+        const r = await refreshSpotifyToken(profile.spotify_refresh_token);
+        if (r) {
+          setSpotifyReady(true);
+        } else {
+          // Refresh failed — silently re-authenticate instead of showing error
+          console.log("Spotify token refresh failed, re-authenticating...");
+          await supabase.auth.signInWithOAuth({
+            provider: "spotify",
+            options: {
+              redirectTo: window.location.origin,
+              scopes: "playlist-modify-public playlist-modify-private user-read-private user-top-read user-read-recently-played",
+            },
+          });
+          return; // Will redirect, handleSession will be called again with fresh token
+        }
+      } else {
+        // No refresh token at all — re-auth
+        await supabase.auth.signInWithOAuth({
+          provider: "spotify",
+          options: {
+            redirectTo: window.location.origin,
+            scopes: "playlist-modify-public playlist-modify-private user-read-private user-top-read user-read-recently-played",
+          },
+        });
+        return;
+      }
     }
     const { data: ci } = await supabase.from("checkins").select("*").eq("user_id", u.id).order("created_at", { ascending: true }).limit(200);
     if (ci) setCheckins(ci);
